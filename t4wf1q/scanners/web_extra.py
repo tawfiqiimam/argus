@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import tempfile
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .base import Finding, ScanContext, run, tool_available
 from ..scoring import normalize_severity, guess_owasp
@@ -156,11 +156,18 @@ def dalfox(ctx: ScanContext, urls: list[str]) -> list[Finding]:
         except ValueError:
             data = []
         for poc in data if isinstance(data, list) else []:
+            poc_url = poc.get("data") or url
+            # dalfox does not always report the parameter name; recover it from the PoC URL
+            param = poc.get("param") or next(iter(parse_qs(urlparse(poc_url).query)), "") or "unknown"
+            # A scanner PoC is a CANDIDATE. It needs manual verification before it counts as confirmed.
             out.append(Finding(
-                title="Cross-Site Scripting (XSS)", severity="high", owasp="A03",
-                host=host, location=poc.get("data") or url, source="dalfox",
-                description=f"XSS confirmed via parameter '{poc.get('param', '?')}'.",
-                evidence=(poc.get("data") or "")[:200], cwe="CWE-79", confidence="high",
+                title="Cross-Site Scripting candidate (dalfox PoC, needs manual verification)",
+                severity="high", owasp="A03",
+                host=host, location=poc_url, source="dalfox",
+                description=(f"dalfox produced a working XSS proof-of-concept via parameter '{param}'. "
+                             "Verify manually in a browser before reporting: confirm the payload "
+                             "executes on the real page and check the reflection context."),
+                evidence=poc_url[:200], cwe="CWE-79", confidence="medium",
                 remediation="Context-encode output and validate input; apply a strict CSP.",
             ))
     ctx.log("info", f"dalfox: {len(out)} finding(s)")

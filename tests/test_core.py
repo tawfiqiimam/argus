@@ -187,5 +187,30 @@ class AdapterParserTests(unittest.TestCase):
         self.assertTrue(any("intrusive" in m for m in logs))
 
 
+class DalfoxAdapterTests(unittest.TestCase):
+    """dalfox PoCs are candidates: never 'confirmed', and the parameter is recovered from the URL."""
+
+    def test_poc_is_candidate_with_recovered_parameter(self):
+        import json as _json
+        from t4wf1q.scanners import web_extra
+
+        poc = [{"data": "http://www.example.test/?h5debug=%3Cscript%3E"}]   # no 'param' key, like the bug
+        orig_run, orig_avail = web_extra.run, web_extra.tool_available
+        web_extra.run = lambda cmd, timeout=600: (0, _json.dumps(poc), "")
+        web_extra.tool_available = lambda binary: True
+        try:
+            ctx = ScanContext(asset={"id": "t", "target": "www.example.test"}, scan_id="s",
+                              cfg=None, log=lambda lvl, msg: None, scanners_cfg={})
+            out = web_extra.dalfox(ctx, ["http://www.example.test/?h5debug=1"])
+        finally:
+            web_extra.run, web_extra.tool_available = orig_run, orig_avail
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].confidence, "medium")
+        self.assertIn("candidate", out[0].title)
+        self.assertIn("'h5debug'", out[0].description)
+        self.assertNotIn("'?'", out[0].description)
+
+
 if __name__ == "__main__":
     unittest.main()
