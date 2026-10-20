@@ -131,6 +131,19 @@ async function renderOverview(v) {
   const s = await api("/api/stats");
   const c = s.counts;
   v.innerHTML = `
+    <div class="huntbar">
+      <div class="hb-row">
+        <span class="hb-ico">🎯</span>
+        <input id="huntInput" autocomplete="off" spellcheck="false"
+               placeholder="Enter a domain or URL and press Enter to hunt —  e.g. example.com">
+        <button class="btn hb-go" onclick="quickHunt()">Hunt ▸</button>
+      </div>
+      <div class="hb-foot">
+        <label class="chkline"><input type="checkbox" id="huntAuth">
+          <span>I own this target or I'm <b>authorized</b> to test it (adds it to scope)</span></label>
+        <span id="huntErr" class="sev-crit" style="font-size:12px"></span>
+      </div>
+    </div>
     <div class="row cols-5" style="margin-bottom:14px">
       <div class="panel stat riskcard"><div class="n">${s.risk}</div><div class="l">Risk score</div><div class="spark">▲</div></div>
       ${statCard("Critical", c.critical, "crit")}
@@ -159,6 +172,8 @@ async function renderOverview(v) {
       <div class="panel"><h2>Recent findings</h2>${findingsTable(s.recent_findings, true)}</div>
       <div class="panel"><h2>Recent scans</h2>${scansTable(s.recent_scans)}</div>
     </div>`;
+  const hi = $("#huntInput");
+  if (hi) hi.addEventListener("keydown", e => { if (e.key === "Enter") quickHunt(); });
   const al = await api("/api/assets");
   $("#ovAssets").innerHTML = al.length ? al.slice(0, 6).map(a => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
@@ -175,6 +190,28 @@ window.gotoOwasp = (code) => {
   S.view = "findings";
   $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "findings"));
   render().then(() => { const sel = $("#fOwasp"); if (sel) { sel.value = code; sel.onchange(); } });
+};
+window.quickHunt = async () => {
+  const target = ($("#huntInput").value || "").trim();
+  const err = $("#huntErr"); if (err) err.textContent = "";
+  if (!target) return;
+  const authorized = $("#huntAuth").checked;
+  const go = $(".hb-go"); if (go) { go.disabled = true; go.textContent = "Starting…"; }
+  try {
+    const asset = await api("/api/assets", { method: "POST", body: JSON.stringify({
+      target, kind: "program", add_to_scope: authorized, authorized }) });
+    await api(`/api/assets/${asset.id}/scan`, { method: "POST", body: JSON.stringify({ profile: "owasp-full" }) });
+    toast("Hunt started ✓ — watching live");
+    S.view = "live"; $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "live"));
+    const [t, sub] = TITLES.live; $("#viewTitle").textContent = t; $("#viewSub").textContent = sub;
+    render();
+  } catch (e) {
+    let msg = e.message.replace(/[{}"]/g, "").replace("detail:", "").trim().slice(0, 220);
+    if (msg.toLowerCase().includes("out of scope"))
+      msg = "Out of scope — tick the authorization box below, then press Hunt.";
+    if (err) err.textContent = msg;
+    if (go) { go.disabled = false; go.textContent = "Hunt ▸"; }
+  }
 };
 
 // ---- ASSETS -------------------------------------------------

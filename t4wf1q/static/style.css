@@ -180,3 +180,17 @@ tbody tr:hover{background:#17213680}
 .rule .mono{flex:1;font-size:13px}
 .xrule{all:unset;cursor:pointer;color:var(--dim);font-size:13px;padding:2px 6px;border-radius:6px}
 .xrule:hover{color:var(--crit);background:#2a0f16}
+
+/* overview hunt bar --------------------------------------- */
+.huntbar{background:linear-gradient(135deg,#1b1340,#101a33);
+  border:1px solid var(--line2);border-radius:var(--radius);
+  padding:16px 18px;margin-bottom:16px;box-shadow:0 8px 30px #0006,inset 0 1px 0 #ffffff0d}
+.hb-row{display:flex;align-items:center;gap:12px}
+.hb-ico{font-size:22px;filter:drop-shadow(0 0 10px var(--accent2))}
+.hb-row input{flex:1;background:#0a0e17cc;border:1px solid var(--line2);
+  padding:14px 16px;border-radius:var(--radius-sm);font-size:15px;color:var(--ink)}
+.hb-row input:focus{border-color:var(--accent2);box-shadow:0 0 0 3px var(--accent-glow)}
+.hb-go{padding:14px 24px;font-size:15px;white-space:nowrap}
+.hb-go:disabled{opacity:.6;cursor:default}
+.hb-foot{display:flex;align-items:center;gap:16px;margin-top:11px;flex-wrap:wrap}
+.hb-foot .chkline{font-size:12px}
