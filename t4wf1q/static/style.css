@@ -166,3 +166,17 @@ tbody tr:hover{background:#17213680}
 .seg button.on-fail{background:var(--crit);color:#2a0007}
 .seg button.on-na{background:var(--line2);color:var(--ink)}
 .seg button.on-todo{background:var(--dim);color:#0a0e17}
+
+/* scope management + authorization + settings ------------- */
+.authbox{background:#1a1030;border:1px solid var(--accent);border-radius:var(--radius-sm);
+  padding:11px 13px;margin-top:4px}
+.chkline{display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:12px;
+  color:var(--ink);text-transform:none;letter-spacing:0}
+.chkline input{width:17px;height:17px;accent-color:var(--accent2);margin-top:1px;flex:none}
+.chkline b{color:var(--accent2)}
+.rulelist{display:flex;flex-direction:column;gap:6px}
+.rule{display:flex;align-items:center;gap:10px;padding:8px 11px;background:var(--bg2);
+  border:1px solid var(--line);border-radius:var(--radius-sm)}
+.rule .mono{flex:1;font-size:13px}
+.xrule{all:unset;cursor:pointer;color:var(--dim);font-size:13px;padding:2px 6px;border-radius:6px}
+.xrule:hover{color:var(--crit);background:#2a0f16}

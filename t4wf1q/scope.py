@@ -71,6 +71,14 @@ class ScopeGuard:
             deny=cfg.get("scope", "deny", default=[]),
         )
 
+    @classmethod
+    def from_db(cls) -> "ScopeGuard":
+        """Build the guard from runtime-editable scope stored in the DB."""
+        from . import db
+        allow, deny = db.scope_lists()
+        enforce = bool(db.get_setting("scope_enforce", True))
+        return cls(enforce=enforce, allow=allow, deny=deny)
+
     def check(self, target: str) -> tuple[bool, str]:
         """Return (allowed, reason)."""
         host = extract_host(target)

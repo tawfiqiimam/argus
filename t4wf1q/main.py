@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from . import db, events, pipeline, report
 from .config import get_config
 from .scheduler import Scheduler
-from .scope import ScopeGuard, extract_host
+from .scope import ScopeGuard, extract_host, looks_like_domain
 from .checklist import CATALOG, coverage
 from .scoring import risk_score, OWASP_TOP10
 
@@ -37,10 +37,19 @@ def require_key(x_api_key: str | None = Header(default=None),
 async def _startup():
     global _scheduler
     db.init(cfg.db_path)
+    # Seed runtime-editable scope + settings from config on first boot.
+    db.seed_scope(cfg.get("scope", "allow", default=[]), cfg.get("scope", "deny", default=[]))
+    db.seed_setting("scope_enforce", cfg.get("scope", "enforce", default=True))
+    db.seed_setting("automation_enabled", cfg.get("automation", "enabled", default=True))
     events.bind_loop(asyncio.get_running_loop())
     pipeline.start_worker(cfg)
     _scheduler = Scheduler(cfg)
     _scheduler.start()
+
+
+def current_guard() -> ScopeGuard:
+    """Scope guard built from the live DB rules (UI-editable)."""
+    return ScopeGuard.from_db()
 
 
 @app.on_event("shutdown")
@@ -55,6 +64,11 @@ class AssetIn(BaseModel):
     name: str | None = None
     kind: str = "web"
     tags: list[str] = []
+    # UI-driven scope authorization: when a target is out of scope, the user
+    # may authorize it here (an explicit assertion that they own / are allowed
+    # to test it). Nothing is scanned without this.
+    add_to_scope: bool = False
+    authorized: bool = False
 
 
 class ScanIn(BaseModel):
@@ -75,6 +89,18 @@ class ScopeIn(BaseModel):
     pattern: str
 
 
+class ScopeAddIn(BaseModel):
+    pattern: str
+    kind: str = "allow"            # allow | deny
+    authorized: bool = False       # required for allow rules
+    note: str | None = None
+
+
+class SettingIn(BaseModel):
+    automation_enabled: bool | None = None
+    scope_enforce: bool | None = None
+
+
 # ---------------------------------------------------------------- meta
 @app.get("/api/health")
 def health():
@@ -83,13 +109,18 @@ def health():
 
 @app.get("/api/config")
 def api_config(_=require_key):  # noqa: B008
-    g = ScopeGuard.from_config(cfg)
+    g = current_guard()
     return {
         "scope_enforced": g.enforce,
         "allow": g.allow,
         "deny": g.deny,
-        "automation": cfg.get("automation", default={}),
+        "automation": {
+            "enabled": bool(db.get_setting("automation_enabled", cfg.get("automation", "enabled", default=True))),
+            "full_scan_cron_hour": cfg.get("automation", "full_scan_cron_hour", default=2),
+            "change_watch_minutes": cfg.get("automation", "change_watch_minutes", default=15),
+        },
         "owasp": OWASP_TOP10,
+        "owasp_names": OWASP_TOP10,
     }
 
 
@@ -108,10 +139,19 @@ def get_assets(_=require_key):  # noqa: B008
 
 @app.post("/api/assets")
 def create_asset(body: AssetIn, _=require_key):  # noqa: B008
-    guard = ScopeGuard.from_config(cfg)
+    guard = current_guard()
     ok, reason = guard.check(body.target)
     if not ok:
-        raise HTTPException(status_code=400, detail=f"out of scope: {reason}")
+        # Allow the UI to authorize an out-of-scope target in one step, but
+        # only on an explicit authorization assertion from the user.
+        if body.add_to_scope and body.authorized:
+            host = extract_host(body.target)
+            # a plain domain pattern authorizes its subdomains too
+            db.add_scope("allow", host, note="added from UI (user asserted authorization)")
+            guard = current_guard()
+            ok, reason = guard.check(body.target)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"out of scope: {reason}")
     existing = db.find_asset_by_target(body.target)
     if existing:
         return existing
@@ -145,7 +185,7 @@ def start_scan(aid: str, body: ScanIn, _=require_key):  # noqa: B008
     asset = db.get_asset(aid)
     if not asset:
         raise HTTPException(404, "asset not found")
-    guard = ScopeGuard.from_config(cfg)
+    guard = current_guard()
     ok, reason = guard.check(asset["target"])
     if not ok:
         raise HTTPException(400, f"out of scope: {reason}")
@@ -229,15 +269,54 @@ def update_checklist(aid: str, body: ChecklistIn, _=require_key):  # noqa: B008
 # ---------------------------------------------------------------- scope
 @app.get("/api/scope")
 def get_scope(_=require_key):  # noqa: B008
-    g = ScopeGuard.from_config(cfg)
-    return {"enforce": g.enforce, "allow": g.allow, "deny": g.deny}
+    g = current_guard()
+    return {"enforce": g.enforce, "allow": g.allow, "deny": g.deny, "rules": db.list_scope()}
+
+
+@app.post("/api/scope")
+def scope_add(body: ScopeAddIn, _=require_key):  # noqa: B008
+    pattern = (body.pattern or "").strip().lower()
+    if not pattern:
+        raise HTTPException(400, "empty pattern")
+    if body.kind == "allow" and not body.authorized:
+        raise HTTPException(400, "authorization required: confirm you own or are "
+                                 "authorized to test this target before adding it to scope")
+    note = body.note or ("authorized via UI" if body.kind == "allow" else "deny rule via UI")
+    rule = db.add_scope(body.kind, pattern, note=note)
+    return {"ok": True, "rule": rule, "rules": db.list_scope()}
+
+
+@app.delete("/api/scope/{rule_id}")
+def scope_remove(rule_id: str, _=require_key):  # noqa: B008
+    db.remove_scope(rule_id)
+    return {"ok": True, "rules": db.list_scope()}
 
 
 @app.post("/api/scope/check")
 def scope_check(body: ScopeIn, _=require_key):  # noqa: B008
-    g = ScopeGuard.from_config(cfg)
+    g = current_guard()
     ok, reason = g.check(body.pattern)
     return {"host": extract_host(body.pattern), "allowed": ok, "reason": reason}
+
+
+# ---------------------------------------------------------------- settings
+@app.get("/api/settings")
+def get_settings(_=require_key):  # noqa: B008
+    return {
+        "automation_enabled": bool(db.get_setting("automation_enabled", True)),
+        "scope_enforce": bool(db.get_setting("scope_enforce", True)),
+        "full_scan_cron_hour": cfg.get("automation", "full_scan_cron_hour", default=2),
+        "change_watch_minutes": cfg.get("automation", "change_watch_minutes", default=15),
+    }
+
+
+@app.post("/api/settings")
+def update_settings(body: SettingIn, _=require_key):  # noqa: B008
+    if body.automation_enabled is not None:
+        db.set_setting("automation_enabled", bool(body.automation_enabled))
+    if body.scope_enforce is not None:
+        db.set_setting("scope_enforce", bool(body.scope_enforce))
+    return get_settings()
 
 
 # ---------------------------------------------------------------- reports

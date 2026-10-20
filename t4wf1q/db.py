@@ -106,6 +106,21 @@ CREATE TABLE IF NOT EXISTS events (
     message     TEXT
 );
 
+CREATE TABLE IF NOT EXISTS scope_rules (
+    id          TEXT PRIMARY KEY,
+    kind        TEXT NOT NULL,        -- allow | deny
+    pattern     TEXT NOT NULL,
+    note        TEXT,
+    created_at  TEXT NOT NULL,
+    UNIQUE(kind, pattern)
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
 CREATE INDEX IF NOT EXISTS idx_findings_sev   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_scans_asset    ON scans(asset_id);
@@ -416,3 +431,73 @@ def list_events(scan_id: str | None = None, limit: int = 200) -> list[dict]:
                           (scan_id, limit))
             )
         return _rows(c.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)))
+
+
+# --- scope rules (runtime-editable from the UI) ---------------------------
+def seed_scope(allow: list[str], deny: list[str]) -> None:
+    """Populate scope_rules from config the first time only."""
+    with conn() as c:
+        cur = c.execute("SELECT COUNT(*) n FROM scope_rules")
+        if cur.fetchone()["n"] > 0:
+            return
+        ts = now_iso()
+        for p in (allow or []):
+            c.execute("INSERT OR IGNORE INTO scope_rules(id,kind,pattern,note,created_at)"
+                      " VALUES(?,?,?,?,?)", (new_id("sr_"), "allow", p, "seeded from config", ts))
+        for p in (deny or []):
+            c.execute("INSERT OR IGNORE INTO scope_rules(id,kind,pattern,note,created_at)"
+                      " VALUES(?,?,?,?,?)", (new_id("sr_"), "deny", p, "seeded from config", ts))
+
+
+def list_scope() -> list[dict]:
+    with conn() as c:
+        return _rows(c.execute("SELECT * FROM scope_rules ORDER BY kind, pattern"))
+
+
+def add_scope(kind: str, pattern: str, note: str | None = None) -> dict:
+    kind = "deny" if kind == "deny" else "allow"
+    pattern = pattern.strip().lower()
+    with conn() as c:
+        c.execute("INSERT OR IGNORE INTO scope_rules(id,kind,pattern,note,created_at)"
+                  " VALUES(?,?,?,?,?)", (new_id("sr_"), kind, pattern, note, now_iso()))
+        cur = c.execute("SELECT * FROM scope_rules WHERE kind=? AND pattern=?", (kind, pattern))
+        return dict(cur.fetchone())
+
+
+def remove_scope(rule_id: str) -> None:
+    with conn() as c:
+        c.execute("DELETE FROM scope_rules WHERE id=?", (rule_id,))
+
+
+def scope_lists() -> tuple[list[str], list[str]]:
+    rules = list_scope()
+    allow = [r["pattern"] for r in rules if r["kind"] == "allow"]
+    deny = [r["pattern"] for r in rules if r["kind"] == "deny"]
+    return allow, deny
+
+
+# --- settings (key/value) -------------------------------------------------
+def get_setting(key: str, default=None):
+    with conn() as c:
+        cur = c.execute("SELECT value FROM settings WHERE key=?", (key,))
+        r = cur.fetchone()
+        if not r:
+            return default
+        try:
+            return json.loads(r["value"])
+        except (ValueError, TypeError):
+            return r["value"]
+
+
+def set_setting(key: str, value) -> None:
+    with conn() as c:
+        c.execute(
+            "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (key, json.dumps(value), now_iso()),
+        )
+
+
+def seed_setting(key: str, value) -> None:
+    if get_setting(key, None) is None:
+        set_setting(key, value)

@@ -26,10 +26,14 @@ class Scheduler:
         self._last_watch = 0.0
 
     def start(self) -> None:
-        if not self.cfg.get("automation", "enabled", default=True):
-            return
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="t4wf1q-sched")
+        # Always run the loop; whether it does anything is checked live each
+        # tick against the DB setting, so the UI toggle takes effect instantly.
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="argus-sched")
         self._thread.start()
+
+    def _enabled(self) -> bool:
+        return bool(db.get_setting("automation_enabled",
+                                   self.cfg.get("automation", "enabled", default=True)))
 
     def stop(self) -> None:
         self._stop.set()
@@ -42,6 +46,8 @@ class Scheduler:
                 pass
 
     def _tick(self) -> None:
+        if not self._enabled():
+            return
         now = datetime.now()
         full_hour = int(self.cfg.get("automation", "full_scan_cron_hour", default=2))
         watch_min = int(self.cfg.get("automation", "change_watch_minutes", default=15))

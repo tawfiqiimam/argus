@@ -146,7 +146,7 @@ docker compose --profile lab up    # also launches Juice Shop on :3000
 | **Live Scan** | Real-time console + finding feed as a scan runs |
 | **OWASP Checklist** | Manual review tracker, per asset, with pass/fail/n-a states |
 | **Reports** | Browse and open every auto-generated report |
-| **Scope** | View the allowlist and test whether a target is authorized |
+| **Scope** | Add / remove authorized targets, toggle automation, test a target — all from the UI |
 
 ## Using the CLI
 
@@ -186,7 +186,9 @@ For a permanent address, pair a free subdomain (DuckDNS) with an *Always Free* c
 
 ## Scope safety — how Argus stays legal
 
-Every scan request passes through `ScopeGuard` before a single packet is sent. A target is rejected unless it matches an `allow` rule, and always rejected if it matches a `deny` rule. A plain domain in the allowlist authorizes its subdomains too; `*.wildcards` and CIDR ranges are supported. This is precisely what makes unattended automation safe — **do not disable it on hosts you don't control.**
+Every scan request passes through `ScopeGuard` before a single packet is sent. A target is rejected unless it matches an `allow` rule, and always rejected if it matches a `deny` rule. A plain domain in the allowlist authorizes its subdomains too; `*.wildcards` and CIDR ranges are supported.
+
+Scope is **managed entirely from the dashboard** (Scope view) and stored in the database — no file editing or restart required. The initial allow/deny lists are seeded from `config.yaml` on first run. Adding a target to scope requires an explicit authorization assertion ("I own this / I'm authorized to test it"), and the same confirmation gates the one-step *New Scan* flow. This is precisely what makes unattended automation safe — **only add targets you own or are authorized to test.**
 
 ## Project layout
 

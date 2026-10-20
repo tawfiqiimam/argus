@@ -349,23 +349,73 @@ window.genReport = async () => {
   toast("Report generated ✓"); render();
 };
 
-// ---- SCOPE --------------------------------------------------
+// ---- SCOPE + SETTINGS --------------------------------------
 async function renderScope(v) {
-  const sc = await api("/api/scope");
-  v.innerHTML = `<div class="row cols-2">
-    <div class="panel"><h2>Allowlist ${sc.enforce ? "(enforced)" : "(⚠ OFF)"}</h2>
-      ${sc.allow.map(a => `<div class="tag" style="margin:3px">${esc(a)}</div>`).join("") || "<div class='muted'>none</div>"}
-      <h2 style="margin-top:18px">Denylist</h2>
-      ${sc.deny.map(a => `<div class="tag" style="margin:3px">${esc(a)}</div>`).join("") || "<div class='muted'>none</div>"}
-      <p class="muted" style="font-size:12px;margin-top:16px">Edit the allow/deny lists in <span class="mono">config.yaml</span> and restart. Scans only run against in-scope hosts.</p>
+  const [sc, set] = await Promise.all([api("/api/scope"), api("/api/settings")]);
+  const rules = sc.rules || [];
+  const allowRules = rules.filter(r => r.kind === "allow");
+  const denyRules = rules.filter(r => r.kind === "deny");
+  const ruleRow = (r) => `<div class="rule">
+    <span class="mono">${esc(r.pattern)}</span>
+    ${r.note ? `<span class="muted" style="font-size:10px">${esc(r.note)}</span>` : ""}
+    <button class="xrule" title="remove" onclick="delScope('${r.id}')">✕</button></div>`;
+
+  v.innerHTML = `<div class="row cols-2b">
+    <div class="panel">
+      <h2>Scope — authorized targets</h2>
+      <p class="muted" style="font-size:12px;margin-top:-6px">Scans only run against hosts matching an allow rule. A root domain authorizes all of its subdomains.</p>
+
+      <label>Add a target to scope</label>
+      <div style="display:flex;gap:8px;margin:6px 0 8px">
+        <input id="scPattern" placeholder="example.com  /  10.0.0.0/24  /  *.example.com" style="flex:1">
+        <select id="scKind" style="width:90px"><option value="allow">allow</option><option value="deny">deny</option></select>
+      </div>
+      <label class="chkline" style="margin-bottom:8px"><input type="checkbox" id="scAuth">
+        <span>I own this target or I'm <b>authorized</b> to test it</span></label>
+      <button class="btn sm" onclick="addScope()">Add rule</button>
+      <span id="scAddErr" class="sev-crit" style="font-size:11px;margin-left:8px"></span>
+
+      <h2 style="margin-top:20px">Allowlist (${allowRules.length})</h2>
+      <div class="rulelist">${allowRules.map(ruleRow).join("") || "<div class='muted'>none</div>"}</div>
+      <h2 style="margin-top:16px">Denylist (${denyRules.length})</h2>
+      <div class="rulelist">${denyRules.map(ruleRow).join("") || "<div class='muted'>none</div>"}</div>
     </div>
-    <div class="panel"><h2>Scope checker</h2>
-      <p class="muted" style="font-size:12px">Test whether a target would be allowed.</p>
-      <div style="display:flex;gap:8px"><input id="scTest" placeholder="example.com or https://host" style="flex:1">
-      <button class="btn sm" onclick="checkScope()">Check</button></div>
-      <div id="scRes" style="margin-top:14px"></div>
+
+    <div>
+      <div class="panel" style="margin-bottom:14px">
+        <h2>Automation</h2>
+        <label class="chkline"><input type="checkbox" id="setAuto" ${set.automation_enabled ? "checked" : ""} onchange="toggleSetting('automation_enabled',this.checked)">
+          <span>Continuous assessment — daily full scan + ${set.change_watch_minutes}-min change-watch</span></label>
+        <label class="chkline" style="margin-top:10px"><input type="checkbox" id="setEnforce" ${set.scope_enforce ? "checked" : ""} onchange="toggleSetting('scope_enforce',this.checked)">
+          <span>Enforce scope (strongly recommended)</span></label>
+        <p class="muted" style="font-size:11px;margin-top:10px">Daily full scan runs around ${String(set.full_scan_cron_hour).padStart(2,'0')}:00. Changes apply live — no restart needed.</p>
+      </div>
+      <div class="panel"><h2>Scope checker</h2>
+        <p class="muted" style="font-size:12px">Would a target be allowed?</p>
+        <div style="display:flex;gap:8px"><input id="scTest" placeholder="example.com or https://host" style="flex:1">
+        <button class="btn sm" onclick="checkScope()">Check</button></div>
+        <div id="scRes" style="margin-top:14px"></div>
+      </div>
     </div></div>`;
 }
+window.addScope = async () => {
+  const pattern = $("#scPattern").value.trim();
+  const kind = $("#scKind").value;
+  const authorized = $("#scAuth").checked;
+  if (!pattern) return;
+  if (kind === "allow" && !authorized) { $("#scAddErr").textContent = "Tick the authorization box first."; return; }
+  try {
+    await api("/api/scope", { method: "POST", body: JSON.stringify({ pattern, kind, authorized }) });
+    toast("Scope updated ✓"); renderScope($("#views"));
+  } catch (e) { $("#scAddErr").textContent = e.message.replace(/[{}"]/g, "").replace("detail:", "").slice(0, 120); }
+};
+window.delScope = async (id) => {
+  await api(`/api/scope/${id}`, { method: "DELETE" }); toast("Rule removed"); renderScope($("#views"));
+};
+window.toggleSetting = async (key, val) => {
+  await api("/api/settings", { method: "POST", body: JSON.stringify({ [key]: val }) });
+  toast(val ? "Enabled" : "Disabled");
+};
 window.checkScope = async () => {
   const r = await api("/api/scope/check", { method: "POST", body: JSON.stringify({ pattern: $("#scTest").value }) });
   $("#scRes").innerHTML = `<div class="block">
@@ -438,38 +488,51 @@ window.delAsset = async (aid) => {
 // ---- scan dialog --------------------------------------------
 function openScanDialog() {
   openDrawer(`
-    <h2>New scan</h2>
-    <label>Target (URL / host / domain)</label>
-    <input id="nsTarget" placeholder="https://juice-shop.local  or  example.com" style="width:100%;margin:6px 0 12px">
+    <h2>New scan &amp; hunt</h2>
+    <label>Target — URL, host, or root domain</label>
+    <input id="nsTarget" placeholder="example.com   (root domain = full subdomain hunt)" style="width:100%;margin:6px 0 12px">
     <label>Name (optional)</label>
     <input id="nsName" placeholder="My app" style="width:100%;margin:6px 0 12px">
-    <label>Kind</label>
-    <select id="nsKind" style="width:100%;margin:6px 0 12px">
-      <option value="web">web</option><option value="host">host</option>
-      <option value="program">bug-bounty program (domain)</option></select>
-    <label>Scan profile</label>
-    <select id="nsProfile" style="width:100%;margin:6px 0 16px">
-      <option value="owasp-full">owasp-full — recon + web + network</option>
-      <option value="web">web — http checks + nuclei</option>
-      <option value="recon">recon — subdomains + liveness only</option>
-      <option value="network">network — nmap ports</option>
-      <option value="quick">quick — fast http checks</option></select>
-    <p class="muted" style="font-size:11px;margin:0 0 14px">Target must be in scope. Only scan assets you are authorized to test.</p>
-    <button class="btn" style="width:100%;text-align:center" onclick="submitScan()">Add & scan</button>
-    <p id="nsErr" class="sev-crit" style="font-size:12px"></p>`);
+    <div class="cols-2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div><label>Kind</label>
+        <select id="nsKind" style="width:100%;margin:6px 0 12px">
+          <option value="program">bug-bounty program (domain)</option>
+          <option value="web">web app</option><option value="host">single host</option></select></div>
+      <div><label>Profile</label>
+        <select id="nsProfile" style="width:100%;margin:6px 0 12px">
+          <option value="owasp-full">owasp-full — hunt + web + network</option>
+          <option value="web">web — http + nuclei</option>
+          <option value="recon">recon — subdomains only</option>
+          <option value="network">network — nmap</option>
+          <option value="quick">quick</option></select></div>
+    </div>
+    <div class="authbox">
+      <label class="chkline"><input type="checkbox" id="nsAuth">
+        <span>I own this target or I'm <b>authorized</b> to test it (e.g. a bug-bounty scope). It will be added to scope.</span></label>
+    </div>
+    <button class="btn" style="width:100%;text-align:center;margin-top:14px" onclick="submitScan()">Add to scope &amp; start hunt</button>
+    <p id="nsErr" class="sev-crit" style="font-size:12px"></p>
+    <p class="muted" style="font-size:11px;margin-top:10px">A root domain runs the full pipeline: subdomain discovery → live-host probe → OWASP Top 10 + CVE scan on every in-scope host. Only authorized targets are ever scanned.</p>`);
 }
 window.submitScan = async () => {
   const target = $("#nsTarget").value.trim();
   if (!target) return;
+  const authorized = $("#nsAuth").checked;
   try {
     const asset = await api("/api/assets", { method: "POST", body: JSON.stringify({
-      target, name: $("#nsName").value.trim() || null, kind: $("#nsKind").value }) });
+      target, name: $("#nsName").value.trim() || null, kind: $("#nsKind").value,
+      add_to_scope: authorized, authorized }) });
     await api(`/api/assets/${asset.id}/scan`, { method: "POST", body: JSON.stringify({ profile: $("#nsProfile").value }) });
-    closeDrawer(); toast("Scan queued ✓");
+    closeDrawer(); toast("Hunt started ✓");
     S.view = "live"; $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "live"));
     const [t, s] = TITLES.live; $("#viewTitle").textContent = t; $("#viewSub").textContent = s;
     render();
-  } catch (e) { $("#nsErr").textContent = e.message.replace(/[{}"]/g, "").slice(0, 200); }
+  } catch (e) {
+    let msg = e.message.replace(/[{}"]/g, "").replace("detail:", "").slice(0, 220);
+    if (msg.includes("out of scope"))
+      msg = "Out of scope. Tick the authorization box above to add this target and scan it.";
+    $("#nsErr").textContent = msg;
+  }
 };
 window.runScan = async (aid) => {
   const profile = "owasp-full";
