@@ -123,7 +123,8 @@ Open **http://127.0.0.1:8000**, paste the API key that `setup.sh` printed, and h
 
 ```bash
 docker run --rm -p 127.0.0.1:3000:3000 bkimminich/juice-shop
-# "localhost" is already in the default allowlist — just scan http://localhost:3000
+# Private/loopback targets are refused by default. Turn on "Allow private targets"
+# (Settings, or: POST /api/settings with {"allow_private": true}) for lab use, then scan http://localhost:3000
 ```
 
 ### Or run the whole thing in Docker
@@ -134,7 +135,15 @@ docker compose up --build          # app on 127.0.0.1:8000
 docker compose --profile lab up    # also launches Juice Shop on :3000
 ```
 
-> **Full-depth scanning** is optional. Argus ships with pure-Python HTTP/TLS checks that always produce findings. Install `nmap`, `nuclei`, `httpx`, and `subfinder` on Kali to unlock CVE templates, port scanning, and subdomain discovery — `setup.sh` prints the exact commands.
+> **Scanner tools are installed for you.** `setup.sh` runs `scripts/install-tools.sh`, which installs every tool Argus drives (nuclei, nmap, subfinder, httpx, ZAP, SQLMap, and more). Tools that cannot be installed automatically are listed at the end with a manual hint. Argus still runs without them; the stages that need them are skipped and logged. Use `SKIP_TOOLS=1 ./setup.sh` to skip this step.
+
+## Updating
+
+```bash
+./update.sh
+```
+
+This pulls the latest code from GitHub, updates the Python packages, and installs any new scanner tools. Your `config.yaml` (API key), `data/` and `reports/` are not touched. Restart the server afterwards with `./run.sh`.
 
 ## Using the dashboard
 
