@@ -212,5 +212,38 @@ class DalfoxAdapterTests(unittest.TestCase):
         self.assertNotIn("'?'", out[0].description)
 
 
+class ParamHintTests(unittest.TestCase):
+    """Parameter-name leads: passive, deduplicated, and never storing values."""
+
+    def test_classifies_known_parameter_names(self):
+        from t4wf1q.scanners import param_hints
+
+        leads = param_hints.classify_url("https://app.example.test/view?file=a.txt&ID=7&q=x&other=1")
+        self.assertEqual({(l["param"], l["class"]) for l in leads},
+                         {("file", "LFI/RFI"), ("id", "IDOR"), ("q", "XSS/SSTI/SQLi")})
+
+    def test_leads_are_deduplicated_and_never_contain_values(self):
+        from t4wf1q.scanners import param_hints
+
+        urls = ["https://a.test/x?redirect=https://evil.test&next=1",
+                "https://a.test/x?redirect=other"]
+        leads = param_hints.leads_for_urls(urls)
+        self.assertEqual(len(leads), 2)                    # redirect + next, each once
+        for lead in leads:
+            f = param_hints.lead_to_finding(lead)
+            self.assertEqual(f.severity, "info")
+            self.assertEqual(f.confidence, "low")
+            self.assertNotIn("evil.test", f.evidence)
+            self.assertNotIn("other", f.evidence)
+            self.assertIn("Manual check", f.description)
+
+    def test_non_http_and_credentials_are_handled(self):
+        from t4wf1q.scanners import param_hints
+
+        self.assertEqual(param_hints.classify_url("file:///etc/passwd?file=x"), [])
+        leads = param_hints.classify_url("https://user:secret@a.test/p?cmd=1")
+        self.assertEqual(leads[0]["base"], "https://a.test/p")   # userinfo stripped
+
+
 if __name__ == "__main__":
     unittest.main()

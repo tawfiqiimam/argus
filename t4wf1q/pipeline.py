@@ -20,13 +20,13 @@ from urllib.parse import urlparse
 from . import alerts, db, events, report
 from .config import Config
 from .scanners import (code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
-                       recon_extra, takeover, web_extra, xss)
+                       param_hints, recon_extra, takeover, web_extra, xss)
 from .scanners.base import ScanContext
 from .scope import ScopeGuard, extract_host, looks_like_domain
 from .scoring import meets_threshold, normalize_severity
 
 STAGE_ORDER = [
-    "recon", "amass", "takeover", "probe", "whatweb", "discover", "http", "paths", "xss",
+    "recon", "amass", "takeover", "probe", "whatweb", "discover", "params", "http", "paths", "xss",
     "dalfox", "zap", "nuclei", "nikto", "testssl", "wpscan", "sqlmap", "nmap",
     "gitleaks", "semgrep", "depcheck", "trivy",
 ]
@@ -39,9 +39,9 @@ PROFILES = {
     "recon":      {"label": "Recon only", "stages": ["recon", "amass", "probe", "takeover"]},
     "quick":      {"label": "Quick checks", "stages": ["probe", "http"]},
     "web":        {"label": "Web Application Assessment",
-                   "stages": ["probe", "whatweb", "http", "paths", "xss", "zap", "nuclei", "sqlmap"]},
+                   "stages": ["probe", "whatweb", "discover", "params", "http", "paths", "xss", "zap", "nuclei", "sqlmap"]},
     "api":        {"label": "API Security Assessment",
-                   "stages": ["probe", "discover", "http", "paths", "xss", "zap", "nuclei", "sqlmap"],
+                   "stages": ["probe", "discover", "params", "http", "paths", "xss", "zap", "nuclei", "sqlmap"],
                    "path_categories": _API_PATHS},
     "infra":      {"label": "Domain & Infrastructure Assessment",
                    "stages": ["recon", "amass", "probe", "takeover", "nmap", "testssl", "nikto"]},
@@ -52,7 +52,7 @@ PROFILES = {
                    "stages": ["gitleaks", "semgrep", "depcheck"]},
     "dependency": {"label": "Dependency & Container Assessment", "stages": ["depcheck", "trivy"]},
     "owasp-full": {"label": "OWASP Top 10 web + network",
-                   "stages": ["recon", "amass", "probe", "takeover", "whatweb", "discover", "http",
+                   "stages": ["recon", "amass", "probe", "takeover", "whatweb", "discover", "params", "http",
                               "paths", "xss", "dalfox", "zap", "nuclei", "nikto", "testssl",
                               "sqlmap", "nmap"]},
 }
@@ -186,6 +186,14 @@ def _s_discover(ctx, st, guard, prof):
     st["live"] = list(dict.fromkeys(_live(ctx, st) + ok))
 
 
+def _s_params(ctx, st, guard, prof):
+    # Passive: parameter NAMES only. No request is sent for these leads.
+    urls = list(dict.fromkeys(_live(ctx, st) + st["discovered"]))
+    leads = param_hints.leads_for_urls(urls)
+    st["findings"] += [param_hints.lead_to_finding(lead) for lead in leads]
+    ctx.log("info", f"params: {len(leads)} manual-review lead(s) from parameter names")
+
+
 def _s_http(ctx, st, guard, prof):
     st["findings"] += httpchecks.scan(ctx, _live(ctx, st)[:60])
 
@@ -274,7 +282,8 @@ def _s_trivy(ctx, st, guard, prof):
 
 STAGE_FUNCS = {
     "recon": _s_recon, "amass": _s_amass, "takeover": _s_takeover, "probe": _s_probe,
-    "whatweb": _s_whatweb, "discover": _s_discover, "http": _s_http, "paths": _s_paths,
+    "whatweb": _s_whatweb, "discover": _s_discover, "params": _s_params, "http": _s_http,
+    "paths": _s_paths,
     "xss": _s_xss, "dalfox": _s_dalfox, "zap": _s_zap, "nuclei": _s_nuclei,
     "nikto": _s_nikto, "testssl": _s_testssl, "wpscan": _s_wpscan, "sqlmap": _s_sqlmap,
     "nmap": _s_nmap, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
