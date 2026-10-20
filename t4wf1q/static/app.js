@@ -250,7 +250,7 @@ async function renderFindings(v) {
       <select id="fSev"><option value="">All severities</option>
         ${["critical", "high", "medium", "low", "info"].map(s => `<option>${s}</option>`).join("")}</select>
       <select id="fStatus"><option value="">All statuses</option>
-        ${["open", "triaged", "in_progress", "fixed", "verified", "false_positive", "accepted"].map(s => `<option>${s}</option>`).join("")}</select>
+        ${["new", "confirmed", "false_positive", "accepted_risk", "fixed", "reopened"].map(s => `<option>${s}</option>`).join("")}</select>
       <select id="fOwasp"><option value="">All OWASP</option>
         ${Object.keys(OWASP_NAMES).map(c => `<option value="${c}">${c} ${OWASP_NAMES[c]}</option>`).join("")}</select>
     </div>
@@ -472,7 +472,7 @@ $("#overlay").onclick = closeDrawer;
 window.viewFinding = async (fid) => {
   const f = await api(`/api/findings/${fid}`);
   let refs = []; try { refs = JSON.parse(f.reference || "[]"); } catch {}
-  const statuses = ["open", "triaged", "in_progress", "fixed", "verified", "false_positive", "accepted"];
+  const statuses = ["new", "confirmed", "false_positive", "accepted_risk", "fixed", "reopened"];
   openDrawer(`
     <span class="pill p-${f.severity}">${f.severity}</span>
     <h2 style="margin:12px 0 4px">${esc(f.title)}</h2>

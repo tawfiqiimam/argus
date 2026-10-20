@@ -17,7 +17,10 @@ _DEFAULTS: dict[str, Any] = {
     "auth": {"api_key": ""},
     "database": {"path": "data/t4wf1q.db"},
     "reports": {"dir": "reports"},
-    "scope": {"enforce": True, "allow": ["localhost", "127.0.0.1"], "deny": []},
+    # allow_private: let scans reach loopback/RFC1918 targets (local labs only).
+    # Cloud metadata addresses are blocked regardless of this setting.
+    "scope": {"enforce": True, "allow": ["localhost", "127.0.0.1"], "deny": [], "allow_private": False},
+    "security": {"rate_limit_per_min": 600},
     "automation": {
         "enabled": True,
         "full_scan_cron_hour": 2,

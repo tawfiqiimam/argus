@@ -2,8 +2,13 @@
 
 Stages always run in the fixed, safe order of STAGE_ORDER; a profile decides
 which of them apply. Each stage is isolated: a failing tool is recorded as a
-stage error and the scan continues with partial results. Progress and log lines
-go to the database and the WebSocket bus.
+stage error and the scan continues with partial results. Between stages the
+pipeline checks for a cancel request or an engaged emergency stop and ends the
+scan as "cancelled" with whatever partial results it has. Progress and log
+lines go to the database and the WebSocket bus.
+
+Note: a stage that is already running (for example a long nuclei run) finishes
+before the stop takes effect. Stop requests never kill a half-written report.
 """
 from __future__ import annotations
 
@@ -14,40 +19,42 @@ from urllib.parse import urlparse
 
 from . import alerts, db, events, report
 from .config import Config
-from .scanners import (code_extra, httpchecks, nmap, nuclei, paths, recon,
+from .scanners import (code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
                        recon_extra, takeover, web_extra, xss)
 from .scanners.base import ScanContext
 from .scope import ScopeGuard, extract_host, looks_like_domain
 from .scoring import meets_threshold, normalize_severity
 
 STAGE_ORDER = [
-    "recon", "takeover", "probe", "whatweb", "discover", "http", "paths", "xss",
-    "dalfox", "nuclei", "nikto", "testssl", "wpscan", "nmap",
-    "gitleaks", "semgrep", "trivy",
+    "recon", "amass", "takeover", "probe", "whatweb", "discover", "http", "paths", "xss",
+    "dalfox", "zap", "nuclei", "nikto", "testssl", "wpscan", "sqlmap", "nmap",
+    "gitleaks", "semgrep", "depcheck", "trivy",
 ]
 
 _API_PATHS = {"api", "config", "debug", "vcs", "secrets", "dev", "admin", "robots"}
 _WP_PATHS = {"wp", "config", "debug", "backup", "vcs", "secrets", "robots"}
 
 PROFILES = {
-    "passive":    {"label": "Passive Reconnaissance", "stages": ["recon", "takeover"]},
-    "recon":      {"label": "Recon only", "stages": ["recon", "probe", "takeover"]},
+    "passive":    {"label": "Passive Reconnaissance", "stages": ["recon", "amass", "takeover"]},
+    "recon":      {"label": "Recon only", "stages": ["recon", "amass", "probe", "takeover"]},
     "quick":      {"label": "Quick checks", "stages": ["probe", "http"]},
     "web":        {"label": "Web Application Assessment",
-                   "stages": ["probe", "whatweb", "http", "paths", "xss", "nuclei"]},
+                   "stages": ["probe", "whatweb", "http", "paths", "xss", "zap", "nuclei", "sqlmap"]},
     "api":        {"label": "API Security Assessment",
-                   "stages": ["probe", "discover", "http", "paths", "xss", "nuclei"],
+                   "stages": ["probe", "discover", "http", "paths", "xss", "zap", "nuclei", "sqlmap"],
                    "path_categories": _API_PATHS},
     "infra":      {"label": "Domain & Infrastructure Assessment",
-                   "stages": ["recon", "probe", "takeover", "nmap", "testssl", "nikto"]},
+                   "stages": ["recon", "amass", "probe", "takeover", "nmap", "testssl", "nikto"]},
     "wordpress":  {"label": "WordPress Assessment",
                    "stages": ["probe", "whatweb", "paths", "wpscan", "dalfox", "nuclei"],
                    "path_categories": _WP_PATHS, "force_wpscan": True},
-    "code":       {"label": "Source Code Security Assessment", "stages": ["gitleaks", "semgrep"]},
-    "dependency": {"label": "Dependency & Container Assessment", "stages": ["trivy"]},
+    "code":       {"label": "Source Code Security Assessment",
+                   "stages": ["gitleaks", "semgrep", "depcheck"]},
+    "dependency": {"label": "Dependency & Container Assessment", "stages": ["depcheck", "trivy"]},
     "owasp-full": {"label": "OWASP Top 10 web + network",
-                   "stages": ["recon", "probe", "takeover", "whatweb", "discover", "http",
-                              "paths", "xss", "dalfox", "nuclei", "nikto", "testssl", "nmap"]},
+                   "stages": ["recon", "amass", "probe", "takeover", "whatweb", "discover", "http",
+                              "paths", "xss", "dalfox", "zap", "nuclei", "nikto", "testssl",
+                              "sqlmap", "nmap"]},
 }
 PROFILES["full"] = {"label": "Full Authorized Assessment", "stages": list(STAGE_ORDER)}
 
@@ -91,9 +98,20 @@ def _mk_log(scan_id: str, asset_id: str):
 
 
 def _set_stage(scan_id: str, stage: str, progress: int, log) -> None:
-    db.update_scan(scan_id, stage=stage, progress=progress, status="running")
-    events.publish("scan_update", scan_id=scan_id, stage=stage, progress=progress, status="running")
+    # Status is deliberately not written here, so a concurrent cancel is not overwritten.
+    db.update_scan(scan_id, stage=stage, progress=progress)
+    events.publish("scan_update", scan_id=scan_id, stage=stage, progress=progress)
     log("info", f"stage: {stage}")
+
+
+def _halt_reason(scan_id: str) -> str | None:
+    """Why this scan must stop now, or None if it may continue."""
+    if db.get_setting("emergency_stop", False):
+        return "emergency stop engaged"
+    s = db.get_scan(scan_id)
+    if s and s.get("status") == "cancelled":
+        return "cancelled by operator"
+    return None
 
 
 def _fallback(ctx: ScanContext) -> str:
@@ -118,6 +136,20 @@ def _s_recon(ctx, st, guard, prof):
     st["hosts"] = ok_hosts or [root]
     for h in st["hosts"]:
         db.upsert_subdomain(ctx.asset["id"], h)
+
+
+def _s_amass(ctx, st, guard, prof):
+    root = st["root"]
+    if not looks_like_domain(root):
+        return
+    found = extra_tools.amass_enum(ctx, root)
+    ok_hosts = guard.in_scope_hosts(found)
+    if len(ok_hosts) < len(found):
+        ctx.log("warn", f"scope: {len(found) - len(ok_hosts)} amass host(s) out of scope, skipped")
+    new_hosts = [h for h in ok_hosts if h not in st["hosts"]]
+    for h in new_hosts:
+        db.upsert_subdomain(ctx.asset["id"], h)
+    st["hosts"] = list(dict.fromkeys(st["hosts"] + new_hosts))
 
 
 def _s_takeover(ctx, st, guard, prof):
@@ -171,6 +203,11 @@ def _s_dalfox(ctx, st, guard, prof):
     st["findings"] += web_extra.dalfox(ctx, urls)
 
 
+def _s_zap(ctx, st, guard, prof):
+    urls = [u for u in _live(ctx, st) if guard.check(u)[0]][:3]
+    st["findings"] += extra_tools.zap_baseline(ctx, urls)
+
+
 def _s_nuclei(ctx, st, guard, prof):
     st["findings"] += nuclei.scan(ctx, _live(ctx, st))
 
@@ -192,6 +229,15 @@ def _s_wpscan(ctx, st, guard, prof):
         ctx.log("info", "wpscan: no WordPress detected, skipped")
         return
     st["findings"] += web_extra.wpscan(ctx, [u for u in urls if guard.check(u)[0]][:10])
+
+
+def _s_sqlmap(ctx, st, guard, prof):
+    # Intrusive: runs only when the operator has switched it on in Settings.
+    if not db.get_setting("allow_intrusive", False):
+        ctx.log("info", "sqlmap skipped: intrusive checks are off (enable in Settings after you have authorization)")
+        return
+    urls = [u for u in _live(ctx, st) + st["discovered"] if guard.check(u)[0]]
+    st["findings"] += extra_tools.sqlmap(ctx, urls, allow_intrusive=True)
 
 
 def _s_nmap(ctx, st, guard, prof):
@@ -216,17 +262,23 @@ def _s_semgrep(ctx, st, guard, prof):
         st["findings"] += code_extra.semgrep(ctx)
 
 
+def _s_depcheck(ctx, st, guard, prof):
+    if _code_guard(ctx):
+        st["findings"] += extra_tools.dependency_check(ctx)
+
+
 def _s_trivy(ctx, st, guard, prof):
     if _code_guard(ctx):
         st["findings"] += code_extra.trivy(ctx)
 
 
 STAGE_FUNCS = {
-    "recon": _s_recon, "takeover": _s_takeover, "probe": _s_probe, "whatweb": _s_whatweb,
-    "discover": _s_discover, "http": _s_http, "paths": _s_paths, "xss": _s_xss,
-    "dalfox": _s_dalfox, "nuclei": _s_nuclei, "nikto": _s_nikto, "testssl": _s_testssl,
-    "wpscan": _s_wpscan, "nmap": _s_nmap, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
-    "trivy": _s_trivy,
+    "recon": _s_recon, "amass": _s_amass, "takeover": _s_takeover, "probe": _s_probe,
+    "whatweb": _s_whatweb, "discover": _s_discover, "http": _s_http, "paths": _s_paths,
+    "xss": _s_xss, "dalfox": _s_dalfox, "zap": _s_zap, "nuclei": _s_nuclei,
+    "nikto": _s_nikto, "testssl": _s_testssl, "wpscan": _s_wpscan, "sqlmap": _s_sqlmap,
+    "nmap": _s_nmap, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
+    "depcheck": _s_depcheck, "trivy": _s_trivy,
 }
 
 
@@ -255,6 +307,15 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
     asset = db.get_asset(asset_id)
     if not asset:
         return
+
+    stop = _halt_reason(scan_id)
+    if stop:
+        # Cancelled while still queued, or emergency stop engaged: never start it.
+        db.update_scan(scan_id, status="cancelled", stage="cancelled", finished_at=db.now_iso())
+        db.log_event(f"scan not started: {stop}", scan_id, asset_id, "warn", "log")
+        events.publish("scan_update", scan_id=scan_id, status="cancelled", stage="cancelled")
+        return
+
     scan = db.get_scan(scan_id) or {}
     profile = scan.get("profile") or "owasp-full"
     prof = PROFILES.get(profile, PROFILES["owasp-full"])
@@ -274,7 +335,13 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
     log("info", f"=== Argus scan start · {prof['label']} · target={asset['target']} ===")
     log("info", f"stages: {', '.join(active)}")
 
+    halted = None
     for i, stage in enumerate(active):
+        halted = _halt_reason(scan_id)
+        if halted:
+            st["errors"].append(f"stopped before '{stage}': {halted}")
+            log("warn", f"scan stopped: {halted}")
+            break
         _set_stage(scan_id, stage, 5 + int(85 * i / max(1, len(active))), log)
         try:
             STAGE_FUNCS[stage](ctx, st, guard, prof)
@@ -282,18 +349,20 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
             msg = f"{stage} failed: {type(e).__name__}: {str(e)[:160]}"
             st["errors"].append(msg)
             log("error", msg)
+    halted = halted or _halt_reason(scan_id)
 
     _set_stage(scan_id, "store", 92, log)
     new, tally = _store(ctx, st, cfg, cfg.get("alerts", "min_severity", default="high"))
     db.touch_asset_scan(asset_id)
+    final = "cancelled" if halted else "done"
     stats = {"total": len(st["findings"]), "new": new, **tally, "stages": active,
              "hosts": len(st["hosts"]), "urls": len(_live(ctx, st)),
-             "errors": st["errors"][:20]}
-    db.update_scan(scan_id, status="done", stage="done", progress=100,
+             "errors": st["errors"][:20], "halted": halted}
+    db.update_scan(scan_id, status=final, stage=final, progress=100,
                    finished_at=db.now_iso(), stats=stats)
-    log("info", f"=== scan complete · {stats['total']} finding(s), {new} new, "
+    log("info", f"=== scan {final} · {stats['total']} finding(s), {new} new, "
                 f"{len(st['errors'])} stage error(s) ===")
-    events.publish("scan_update", scan_id=scan_id, status="done", progress=100, stats=stats)
+    events.publish("scan_update", scan_id=scan_id, status=final, progress=100, stats=stats)
 
     try:
         path = report.generate(cfg, asset_id, scan_id)

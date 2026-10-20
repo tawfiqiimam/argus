@@ -27,7 +27,7 @@ def generate(cfg: Config, asset_id: str, scan_id: str | None = None) -> Path | N
         return None
 
     findings = db.list_findings(asset_id=asset_id, limit=1000)
-    open_findings = [f for f in findings if f["status"] not in ("fixed", "verified", "false_positive")]
+    open_findings = [f for f in findings if f["status"] not in db.CLOSED_STATUSES]
     counts = db.severity_counts(asset_id)
     owc = db.owasp_counts(asset_id)
     checklist_items = db.list_checklist(asset_id)

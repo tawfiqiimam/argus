@@ -61,7 +61,7 @@ It is honest about its limits, too. No scanner detects 100% of the OWASP Top 10 
 | 🛡️ **OWASP Top 10 engine** | Findings auto-tagged A01–A10; `nuclei`, `nmap`, and built-in HTTP/TLS checks |
 | 📋 **Manual review checklist** | 26 curated checks for the categories scanners can't catch |
 | ⚡ **Live dashboard** | Risk score, OWASP heat-grid, real-time console, finding feed, attack-surface map |
-| 🧹 **Dedup & triage** | `open → in_progress → fixed → verified`, with auto-reopen on regression |
+| 🧹 **Dedup & triage** | `New → Confirmed → Fixed`, plus False Positive / Accepted Risk. A fixed finding that reappears becomes `Reopened`. Scanner output is never auto-confirmed. |
 | ⏰ **Always-on automation** | Daily full scans, change-watch re-scans, daily CVE-template refresh |
 | 📄 **Auto reports** | Executive summary, OWASP breakdown, checklist coverage — HTML + PDF |
 | 🔔 **Alerts** | Telegram / Discord notifications on new high & critical findings |

@@ -15,6 +15,15 @@ _LOCAL = threading.local()
 _DB_PATH: Path | None = None
 _INIT_LOCK = threading.Lock()
 
+# Finding lifecycle (spec: New, Confirmed, False Positive, Accepted Risk, Fixed, Reopened)
+STATUSES = ("new", "confirmed", "false_positive", "accepted_risk", "fixed", "reopened")
+CLOSED_STATUSES = ("fixed", "false_positive")
+VERIFICATIONS = ("unverified", "manually_verified")
+_CLOSED_SQL = "(" + ",".join(f"'{s}'" for s in CLOSED_STATUSES) + ")"
+# one-time remap of the pre-1.1 status vocabulary
+_LEGACY_STATUS = {"open": "new", "triaged": "new", "in_progress": "confirmed",
+                  "verified": "fixed", "accepted": "accepted_risk"}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -77,7 +86,8 @@ CREATE TABLE IF NOT EXISTS findings (
     evidence     TEXT,
     remediation  TEXT,
     reference    TEXT DEFAULT '[]',
-    status       TEXT DEFAULT 'open',  -- open|triaged|in_progress|fixed|verified|false_positive|accepted
+    status       TEXT DEFAULT 'new',   -- new|confirmed|false_positive|accepted_risk|fixed|reopened
+    verification TEXT DEFAULT 'unverified',  -- unverified|manually_verified (scanner output is never auto-confirmed)
     first_seen   TEXT NOT NULL,
     last_seen    TEXT NOT NULL,
     seen_count   INTEGER DEFAULT 1,
@@ -121,6 +131,15 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS audit (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts     TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    detail TEXT,
+    ip     TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings(asset_id);
 CREATE INDEX IF NOT EXISTS idx_findings_sev   ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_scans_asset    ON scans(asset_id);
@@ -132,6 +151,7 @@ def init(db_path: Path) -> None:
     global _DB_PATH
     with _INIT_LOCK:
         _DB_PATH = Path(db_path)
+        _LOCAL.conn = None  # re-init (e.g. tests) must not reuse a connection to the old file
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _connect() as c:
             c.executescript(SCHEMA)
@@ -139,11 +159,16 @@ def init(db_path: Path) -> None:
 
 
 def _migrate(c: sqlite3.Connection) -> None:
-    """Add columns to existing databases (backward compatible)."""
+    """Bring older databases up to the current schema (idempotent)."""
     cols = {r["name"] for r in c.execute("PRAGMA table_info(findings)")}
-    for col, decl in (("cve", "TEXT"), ("cwe", "TEXT"), ("confidence", "TEXT")):
+    for col, decl in (("cve", "TEXT"), ("cwe", "TEXT"), ("confidence", "TEXT"),
+                      ("verification", "TEXT DEFAULT 'unverified'")):
         if col not in cols:
             c.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
+    c.execute("UPDATE findings SET verification='manually_verified'"
+              " WHERE status='verified' AND verification='unverified'")
+    for old, new in _LEGACY_STATUS.items():
+        c.execute("UPDATE findings SET status=? WHERE status=?", (new, old))
 
 
 def _connect() -> sqlite3.Connection:
@@ -303,10 +328,13 @@ def upsert_finding(asset_id: str, scan_id: str, f: dict) -> tuple[dict, bool]:
         )
         row = cur.fetchone()
         if row:
+            # A fixed finding that reappears is REOPENED and must be re-verified.
             c.execute(
                 "UPDATE findings SET last_seen=?, seen_count=seen_count+1, scan_id=?,"
-                " severity=?, cvss=?, status=CASE WHEN status IN('fixed','verified')"
-                " THEN 'open' ELSE status END WHERE id=?",
+                " severity=?, cvss=?,"
+                " status=CASE WHEN status='fixed' THEN 'reopened' ELSE status END,"
+                " verification=CASE WHEN status='fixed' THEN 'unverified' ELSE verification END"
+                " WHERE id=?",
                 (ts, scan_id, f["severity"], f.get("cvss"), row["id"]),
             )
             return get_finding(row["id"]), False
@@ -320,7 +348,7 @@ def upsert_finding(asset_id: str, scan_id: str, f: dict) -> tuple[dict, bool]:
                 fid, asset_id, scan_id, fp, f["title"], f["severity"], f.get("cvss"),
                 f.get("owasp"), f.get("host"), f.get("location"), f.get("source"),
                 f.get("description"), f.get("evidence"), f.get("remediation"),
-                json.dumps(f.get("reference", [])), "open", ts, ts,
+                json.dumps(f.get("reference", [])), "new", ts, ts,
                 f.get("cve"), f.get("cwe"), f.get("confidence"),
             ),
         )
@@ -361,8 +389,12 @@ def list_findings(
 
 
 def set_finding_status(fid: str, status: str) -> dict | None:
+    if status not in STATUSES:
+        raise ValueError(f"invalid status '{status}'; expected one of {', '.join(STATUSES)}")
+    # Confirming is a human decision, so it also records manual verification.
+    extra = ", verification='manually_verified'" if status == "confirmed" else ""
     with conn() as c:
-        c.execute("UPDATE findings SET status=? WHERE id=?", (status, fid))
+        c.execute(f"UPDATE findings SET status=?{extra} WHERE id=?", (status, fid))
     return get_finding(fid)
 
 
@@ -372,7 +404,7 @@ def severity_counts(asset_id: str | None = None, open_only: bool = True) -> dict
     if asset_id:
         q += " AND asset_id=?"; args.append(asset_id)
     if open_only:
-        q += " AND status NOT IN ('fixed','verified','false_positive')"
+        q += f" AND status NOT IN {_CLOSED_SQL}"
     q += " GROUP BY severity"
     out = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     with conn() as c:
@@ -386,7 +418,7 @@ def owasp_counts(asset_id: str | None = None) -> dict[str, int]:
     args: list[Any] = []
     if asset_id:
         q += " AND asset_id=?"; args.append(asset_id)
-    q += " AND status NOT IN ('fixed','verified','false_positive') GROUP BY owasp"
+    q += f" AND status NOT IN {_CLOSED_SQL} GROUP BY owasp"
     out: dict[str, int] = {}
     with conn() as c:
         for r in c.execute(q, args):
@@ -512,3 +544,29 @@ def set_setting(key: str, value) -> None:
 def seed_setting(key: str, value) -> None:
     if get_setting(key, None) is None:
         set_setting(key, value)
+
+
+# --- scan status summary (dashboard) --------------------------------------
+def scan_status_counts() -> dict[str, int]:
+    out: dict[str, int] = {"total": 0, "queued": 0, "running": 0, "done": 0,
+                           "failed": 0, "cancelled": 0}
+    with conn() as c:
+        for r in c.execute("SELECT status, COUNT(*) n FROM scans GROUP BY status"):
+            out[r["status"]] = r["n"]
+            out["total"] += r["n"]
+    return out
+
+
+# --- audit log (who did what, never secrets) -------------------------------
+def audit(action: str, target: str | None = None, detail: str | None = None,
+          ip: str | None = None) -> None:
+    with conn() as c:
+        c.execute(
+            "INSERT INTO audit(ts,action,target,detail,ip) VALUES(?,?,?,?,?)",
+            (now_iso(), action, (target or "")[:200], (detail or "")[:300], ip),
+        )
+
+
+def list_audit(limit: int = 200) -> list[dict]:
+    with conn() as c:
+        return _rows(c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)))

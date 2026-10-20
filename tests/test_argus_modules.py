@@ -77,7 +77,8 @@ class LocalServerTestCase(unittest.TestCase):
                            scanners_cfg={"request_delay": 0, "request_timeout": 5, "concurrency": 4})
 
     def allow_local(self) -> ScopeGuard:
-        return ScopeGuard(enforce=True, allow=["127.0.0.1"], deny=[])
+        # local http.server is loopback: lab mode must be on for these active-module tests
+        return ScopeGuard(enforce=True, allow=["127.0.0.1"], deny=[], allow_private=True)
 
 
 class TakeoverTests(unittest.TestCase):
