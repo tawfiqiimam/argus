@@ -1,4 +1,4 @@
-# T4WF1Q VMS — container image (bundles nmap + nuclei for a batteries-included run)
+# Argus VMS — container image (bundles nmap + nuclei for a batteries-included run)
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

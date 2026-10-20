@@ -54,7 +54,7 @@ def generate(cfg: Config, asset_id: str, scan_id: str | None = None) -> Path | N
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     safe = "".join(c if c.isalnum() else "_" for c in (asset.get("name") or asset["target"]))[:40]
-    base = cfg.reports_dir / f"T4WF1Q_{safe}_{stamp}"
+    base = cfg.reports_dir / f"Argus_{safe}_{stamp}"
 
     html_path = base.with_suffix(".html")
     html_path.write_text(html, encoding="utf-8")

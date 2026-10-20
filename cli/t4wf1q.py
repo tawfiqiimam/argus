@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""T4WF1Q VMS — command line interface.
+"""Argus VMS — command line interface (by T4WF1Q).
 
 A thin, pretty client over the REST API. Works against a local server or a
 remote one (e.g. your domain behind a Cloudflare tunnel).
@@ -24,20 +24,20 @@ from rich.panel import Panel
 from rich.live import Live
 from rich.text import Text
 
-app = typer.Typer(add_completion=False, help="T4WF1Q Vulnerability Management System CLI")
+app = typer.Typer(add_completion=False, help="Argus — Vulnerability Management System CLI (by T4WF1Q)")
 console = Console()
 
-CFG = Path.home() / ".config" / "t4wf1q" / "cli.json"
+CFG = Path.home() / ".config" / "argus" / "cli.json"
 SEV_COLOR = {"critical": "red", "high": "dark_orange", "medium": "yellow",
              "low": "blue", "info": "grey50"}
 
-BANNER = Text("""
- ████████╗██╗  ██╗██╗    ██╗███████╗ ██╗ ██████╗
- ╚══██╔══╝██║  ██║██║    ██║██╔════╝███║██╔═══██╗
-    ██║   ███████║██║ █╗ ██║█████╗  ╚██║██║   ██║
-    ██║   ╚════██║██║███╗██║██╔══╝   ██║██║▄▄ ██║
-    ██║        ██║╚███╔███╔╝██║      ██║╚██████╔╝
-    ╚═╝        ╚═╝ ╚══╝╚══╝ ╚═╝      ╚═╝ ╚══▀▀═╝ VMS""", style="bold magenta")
+BANNER = Text(r"""
+    _
+   / \   _ __ __ _ _   _ ___     Vulnerability
+  / _ \ | '__/ _` | | | / __|    Management
+ / ___ \| | | (_| | |_| \__ \    System
+/_/   \_\_|  \__, |\__,_|___/     by T4WF1Q
+             |___/""", style="bold magenta")
 
 
 def _load() -> dict:

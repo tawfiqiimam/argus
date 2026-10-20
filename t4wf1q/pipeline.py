@@ -88,7 +88,7 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
     db.update_scan(scan_id, status="running", stage="start", progress=1,
                    started_at=db.now_iso())
     events.publish("scan_update", scan_id=scan_id, status="running", progress=1)
-    log("info", f"=== T4WF1Q scan start · profile={profile} · target={asset['target']} ===")
+    log("info", f"=== Argus scan start · profile={profile} · target={asset['target']} ===")
 
     ctx = ScanContext(asset=asset, scan_id=scan_id, cfg=cfg, log=log,
                       scanners_cfg=scanners_cfg)

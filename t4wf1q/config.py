@@ -1,4 +1,4 @@
-"""Configuration loading for T4WF1Q VMS."""
+"""Configuration loading for Argus VMS."""
 from __future__ import annotations
 
 import os

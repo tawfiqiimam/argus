@@ -19,7 +19,7 @@ from .scoring import risk_score, OWASP_TOP10
 cfg = get_config()
 STATIC = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="T4WF1Q VMS", version="1.0.0")
+app = FastAPI(title="Argus VMS", version="1.0.0")
 _scheduler: Scheduler | None = None
 
 
@@ -78,7 +78,7 @@ class ScopeIn(BaseModel):
 # ---------------------------------------------------------------- meta
 @app.get("/api/health")
 def health():
-    return {"ok": True, "tag": "T4WF1Q", "version": "1.0.0"}
+    return {"ok": True, "app": "Argus", "tag": "T4WF1Q", "version": "1.0.0"}
 
 
 @app.get("/api/config")
@@ -252,7 +252,7 @@ def make_report(aid: str, _=require_key):  # noqa: B008
 @app.get("/api/reports")
 def list_reports(_=require_key):  # noqa: B008
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted(cfg.reports_dir.glob("T4WF1Q_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(cfg.reports_dir.glob("Argus_*"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [{"name": p.name, "size": p.stat().st_size,
              "mtime": int(p.stat().st_mtime)} for p in files]
 
@@ -277,7 +277,7 @@ async def ws(websocket: WebSocket):
     await websocket.accept()
     q = await events.subscribe()
     try:
-        await websocket.send_json({"kind": "hello", "tag": "T4WF1Q"})
+        await websocket.send_json({"kind": "hello", "app": "Argus", "tag": "T4WF1Q"})
         while True:
             msg = await q.get()
             await websocket.send_text(msg)

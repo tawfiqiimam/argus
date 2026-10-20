@@ -10,7 +10,7 @@ _EMOJI = {"critical": "🟥", "high": "🟧", "medium": "🟨", "low": "🟦", "
 
 def notify(cfg: Config, asset: dict, finding: dict) -> None:
     text = (
-        f"{_EMOJI.get(finding['severity'], '•')} *T4WF1Q · {finding['severity'].upper()}*\n"
+        f"{_EMOJI.get(finding['severity'], '•')} *Argus · {finding['severity'].upper()}*\n"
         f"*{finding['title']}*\n"
         f"Asset: {asset.get('name') or asset.get('target')}\n"
         f"Where: `{finding.get('location') or finding.get('host') or '-'}`\n"
