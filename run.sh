@@ -9,6 +9,8 @@ if [ ! -d .venv ]; then
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
+# tools installed by scripts/install-tools.sh live here; the scanner subprocesses need them on PATH
+export PATH="$PATH:$HOME/go/bin:$HOME/.local/bin"
 
 HOST="$(python3 -c 'from t4wf1q.config import get_config as g;print(g().host)')"
 PORT="$(python3 -c 'from t4wf1q.config import get_config as g;print(g().port)')"

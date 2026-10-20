@@ -40,21 +40,15 @@ else
 fi
 mkdir -p data reports
 
-# 3) optional scanners ------------------------------------------
-echo -e "${GREEN}[3/4]${NC} Checking scanner tools on PATH…"
-check () { if command -v "$1" >/dev/null 2>&1; then echo "      ✓ $1"; else echo -e "      ${YEL}✗ $1 (optional, install for full coverage)${NC}"; fi; }
-for t in nmap nuclei httpx subfinder nikto testssl.sh; do check "$t"; done
-cat <<'TIP'
-      On Kali, install the extras with:
-        sudo apt update && sudo apt install -y nmap nikto
-        # ProjectDiscovery tools (Go):
-        sudo apt install -y golang-go
-        go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-        go install github.com/projectdiscovery/httpx/cmd/httpx@latest
-        go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
-        export PATH="$PATH:$HOME/go/bin"
-        nuclei -update-templates
-TIP
+# 3) scanner tools ----------------------------------------------
+# Installs every tool Argus drives (apt first, Go/pip fallback). Best effort:
+# a tool that fails is reported and skipped at scan time, never fatal here.
+echo -e "${GREEN}[3/4]${NC} Scanner tools…"
+if [ "${SKIP_TOOLS:-0}" = "1" ]; then
+  echo "      skipped (SKIP_TOOLS=1). Run ./scripts/install-tools.sh later."
+else
+  bash scripts/install-tools.sh || echo "      tool install finished with warnings (see above)."
+fi
 
 # 4) done --------------------------------------------------------
 echo -e "${GREEN}[4/4]${NC} Setup complete."

@@ -23,10 +23,11 @@ TOOLS = [
     ("wpscan", "wpscan", ["--version"], "Vulnerability Assessment"),
     ("dalfox", "dalfox", ["version"], "Vulnerability Assessment"),
     ("sqlmap", "sqlmap", ["--version"], "Vulnerability Assessment"),
-    ("zap", "zap.sh", ["-version"], "Vulnerability Assessment"),
+    ("zap-baseline", "zap-baseline.py", [], "Vulnerability Assessment"),
     ("semgrep", "semgrep", ["--version"], "Code & Dependencies"),
     ("gitleaks", "gitleaks", ["version"], "Code & Dependencies"),
     ("trivy", "trivy", ["--version"], "Code & Dependencies"),
+    ("dependency-check", "dependency-check", ["--version"], "Code & Dependencies"),
 ]
 
 INSTALL_HINTS = {
@@ -43,10 +44,11 @@ INSTALL_HINTS = {
     "wpscan": "sudo gem install wpscan",
     "dalfox": "go install github.com/hahwul/dalfox/v2@latest",
     "sqlmap": "sudo apt install -y sqlmap",
-    "zap": "sudo apt install -y zaproxy   # or download OWASP ZAP",
+    "zap-baseline": "sudo apt install -y zaproxy   # OWASP ZAP needs Java",
     "semgrep": "pip install --break-system-packages semgrep",
     "gitleaks": "go install github.com/gitleaks/gitleaks/v8@latest",
     "trivy": "sudo apt install -y trivy",
+    "dependency-check": "download OWASP Dependency-Check from github.com/jeremylong/DependencyCheck/releases (needs Java 11+)",
 }
 
 
