@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>T4WF1Q Report · {{ asset.name or asset.target }}</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --bg:#ffffff;
+    --crit:#dc2626; --high:#ea580c; --med:#d97706; --low:#2563eb; --info:#64748b;
+    --accent:#6d28d9;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink);margin:0;padding:40px;background:var(--bg);line-height:1.5}
+  h1,h2,h3{margin:0 0 .4em}
+  .wrap{max-width:900px;margin:0 auto}
+  header{border-bottom:3px solid var(--accent);padding-bottom:18px;margin-bottom:24px;
+         display:flex;justify-content:space-between;align-items:flex-end}
+  .brand{font-weight:800;letter-spacing:.14em;color:var(--accent);font-size:13px}
+  .title{font-size:26px;font-weight:800}
+  .sub{color:var(--muted);font-size:13px}
+  .grid{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}
+  .card{flex:1;min-width:120px;border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card .n{font-size:28px;font-weight:800}
+  .card .l{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+  .risk{background:linear-gradient(135deg,var(--accent),#9333ea);color:#fff;border:none}
+  .risk .l{color:#e9d5ff}
+  table{width:100%;border-collapse:collapse;margin:10px 0 24px;font-size:13px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;color:#fff}
+  .s-critical{background:var(--crit)}.s-high{background:var(--high)}
+  .s-medium{background:var(--med)}.s-low{background:var(--low)}.s-info{background:var(--info)}
+  .sec{margin-top:30px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+        background:#f8fafc;padding:1px 5px;border-radius:5px}
+  .finding{border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:12px}
+  .finding h3{font-size:15px}
+  .kv{color:var(--muted);font-size:12px;margin:2px 0}
+  .bar{height:8px;border-radius:999px;background:#f1f5f9;overflow:hidden}
+  .bar>i{display:block;height:100%}
+  .state-pass{color:#16a34a}.state-fail{color:var(--crit);font-weight:700}
+  .state-todo{color:var(--muted)}.state-na{color:var(--muted)}
+  footer{margin-top:40px;border-top:1px solid var(--line);padding-top:14px;
+         color:var(--muted);font-size:11px}
+  @media print{body{padding:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="brand">T4WF1Q · VULNERABILITY MANAGEMENT SYSTEM</div>
+      <div class="title">Security Assessment Report</div>
+      <div class="sub">{{ asset.name or asset.target }} &nbsp;·&nbsp; <span class="mono">{{ asset.target }}</span></div>
+    </div>
+    <div class="sub" style="text-align:right">
+      Generated<br><strong>{{ generated }}</strong>
+    </div>
+  </header>
+
+  <h2>Executive summary</h2>
+  <div class="grid">
+    <div class="card risk"><div class="n">{{ risk }}</div><div class="l">Risk score /100</div></div>
+    <div class="card"><div class="n" style="color:var(--crit)">{{ counts.critical }}</div><div class="l">Critical</div></div>
+    <div class="card"><div class="n" style="color:var(--high)">{{ counts.high }}</div><div class="l">High</div></div>
+    <div class="card"><div class="n" style="color:var(--med)">{{ counts.medium }}</div><div class="l">Medium</div></div>
+    <div class="card"><div class="n" style="color:var(--low)">{{ counts.low }}</div><div class="l">Low</div></div>
+  </div>
+  <p class="sub">
+    This report covers <strong>{{ findings|length }}</strong> open finding(s) across
+    <strong>{{ live_subs|length }}</strong> live host(s)
+    {% if subdomains %}(of {{ subdomains|length }} discovered){% endif %}.
+  </p>
+
+  <div class="sec">
+    <h2>OWASP Top 10 coverage</h2>
+    <table>
+      <tr><th>Category</th><th>Open findings</th></tr>
+      {% for row in owasp_rows %}
+      <tr>
+        <td><span class="mono">{{ row.code }}</span> &nbsp; {{ row.name }}</td>
+        <td>{% if row.count %}<strong>{{ row.count }}</strong>{% else %}—{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  {% if checklist_cov %}
+  <div class="sec">
+    <h2>Manual review checklist</h2>
+    <p class="sub">{{ checklist_cov.reviewed }}/{{ checklist_cov.total }} items reviewed
+      · {{ checklist_cov.failed }} failed</p>
+    <div class="bar" style="margin-bottom:14px"><i style="width:{{ checklist_cov.percent }}%;background:var(--accent)"></i></div>
+    <table>
+      <tr><th>OWASP</th><th>Check</th><th>Result</th></tr>
+      {% for c in checklist %}
+      <tr>
+        <td class="mono">{{ c.owasp }}</td>
+        <td>{{ c.title }}</td>
+        <td class="state-{{ c.state }}">{{ c.state|upper }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="sec">
+    <h2>Findings detail</h2>
+    {% for f in findings %}
+    <div class="finding">
+      <h3><span class="pill s-{{ f.severity }}">{{ f.severity|upper }}</span> &nbsp; {{ f.title }}</h3>
+      <div class="kv">Location: <span class="mono">{{ f.location or f.host or '—' }}</span></div>
+      <div class="kv">OWASP: {{ f.owasp or '—' }} · Source: {{ f.source }} · Status: {{ f.status }}
+        {% if f.cvss %} · CVSS: {{ f.cvss }}{% endif %}</div>
+      {% if f.description %}<p>{{ f.description }}</p>{% endif %}
+      {% if f.evidence %}<div class="kv">Evidence: <span class="mono">{{ f.evidence }}</span></div>{% endif %}
+      {% if f.remediation %}<p><strong>Fix:</strong> {{ f.remediation }}</p>{% endif %}
+    </div>
+    {% else %}
+    <p class="sub">No open findings. 🎉</p>
+    {% endfor %}
+  </div>
+
+  {% if live_subs %}
+  <div class="sec">
+    <h2>Attack surface ({{ live_subs|length }} live hosts)</h2>
+    <table>
+      <tr><th>Host</th><th>Status</th><th>Title</th></tr>
+      {% for s in live_subs %}
+      <tr><td class="mono">{{ s.host }}</td><td>{{ s.status_code or '—' }}</td><td>{{ s.title or '—' }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <footer>
+    Generated by T4WF1Q VMS v1.0.0 · For authorized testing only.
+    Findings require manual validation before disclosure.
+  </footer>
+</div>
+</body>
+</html>

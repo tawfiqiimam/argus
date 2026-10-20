@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>T4WF1Q · Vulnerability Management System</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="dot"></span> T4WF1Q
+      <small style="margin-left:4px">VMS v1.0</small>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-view="overview" class="active"><span class="ico">◈</span> Overview</button>
+      <button data-view="assets"><span class="ico">⬡</span> Assets</button>
+      <button data-view="findings"><span class="ico">⚠</span> Findings</button>
+      <button data-view="live"><span class="ico">⟲</span> Live Scan</button>
+      <button data-view="checklist"><span class="ico">✓</span> OWASP Checklist</button>
+      <button data-view="reports"><span class="ico">▤</span> Reports</button>
+      <button data-view="scope"><span class="ico">◎</span> Scope</button>
+    </nav>
+    <div class="foot">
+      Authorized testing only.<br>
+      <span class="chip" id="scopeChip">scope: loading…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="viewTitle">Overview</h1>
+        <div class="sub" id="viewSub">Program-wide security posture</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span class="livedot" id="liveDot"><i></i> realtime</span>
+        <button class="btn" id="newScanBtn">+ New Scan</button>
+      </div>
+    </div>
+    <div id="views"></div>
+  </main>
+</div>
+
+<div class="overlay" id="overlay"></div>
+<div class="drawer" id="drawer"></div>
+<div class="toast" id="toast"></div>
+
+<!-- API key gate -->
+<div id="gate" style="position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;
+     align-items:center;justify-content:center;flex-direction:column;gap:14px">
+  <div class="logo" style="font-size:24px"><span class="dot"></span> T4WF1Q VMS</div>
+  <div class="panel" style="width:360px">
+    <h2>API key</h2>
+    <p class="muted" style="font-size:12px;margin:-6px 0 12px">
+      Paste the <span class="mono">api_key</span> from your <span class="mono">config.yaml</span>.</p>
+    <input id="keyInput" type="password" placeholder="api key" style="width:100%;margin-bottom:12px">
+    <button class="btn" id="keyBtn" style="width:100%;text-align:center">Connect</button>
+    <p id="keyErr" class="sev-crit" style="font-size:12px;margin:10px 0 0"></p>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

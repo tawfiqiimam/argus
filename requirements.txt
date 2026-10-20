@@ -1,0 +1,13 @@
+# T4WF1Q VMS - Python dependencies (all free / open-source)
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+jinja2==3.1.5
+pydantic==2.10.4
+pyyaml==6.0.2
+httpx==0.28.1
+typer==0.15.1
+rich==13.9.4
+python-dateutil==2.9.0.post0
+# Optional: PDF reports (pure-python). If weasyprint system deps are missing,
+# the app falls back to standalone HTML reports automatically.
+weasyprint==63.1

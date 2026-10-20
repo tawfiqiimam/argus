@@ -1,0 +1,74 @@
+# ============================================================
+#  T4WF1Q VMS - configuration
+#  Copy this file to config.yaml and edit.
+#      cp config.yaml.example config.yaml
+# ============================================================
+
+server:
+  host: "127.0.0.1"      # use 0.0.0.0 only behind a reverse proxy / tunnel
+  port: 8000
+
+# API key protects the REST API and the CLI login.
+# Generate a strong one:  python -c "import secrets;print(secrets.token_urlsafe(32))"
+auth:
+  api_key: "CHANGE_ME_please_generate_a_long_random_key"
+
+database:
+  path: "data/t4wf1q.db"
+
+reports:
+  dir: "reports"
+
+# ------------------------------------------------------------
+#  SCOPE SAFETY  (read ETHICAL USE NOTICE in LICENSE)
+#  Scans only run against hosts that match an allowlist entry.
+#  An entry like "example.com" also authorizes *.example.com.
+# ------------------------------------------------------------
+scope:
+  enforce: true
+  allow:
+    - "localhost"
+    - "127.0.0.1"
+    - "juice-shop.local"
+    # - "example.com"          # authorizes example.com + all subdomains
+    # - "203.0.113.0/24"       # a CIDR range you own
+  deny:
+    # hard blocks even if an allow rule would match
+    - "*.gov"
+    - "*.mil"
+
+# ------------------------------------------------------------
+#  AUTOMATION
+# ------------------------------------------------------------
+automation:
+  enabled: true
+  full_scan_cron_hour: 2        # daily full scan at 02:00
+  change_watch_minutes: 15      # recrawl + diff every N minutes
+  update_templates_daily: true  # nuclei -update-templates once a day
+
+# ------------------------------------------------------------
+#  ALERTS  (all optional – leave blank to disable)
+# ------------------------------------------------------------
+alerts:
+  min_severity: "high"          # notify on high/critical only
+  telegram:
+    bot_token: ""
+    chat_id: ""
+  discord:
+    webhook_url: ""
+
+# ------------------------------------------------------------
+#  SCANNERS – paths are auto-detected on PATH if left as-is.
+#  Set to a full path to override, or false to disable a tool.
+# ------------------------------------------------------------
+scanners:
+  subfinder: "subfinder"
+  httpx: "httpx"
+  nmap: "nmap"
+  nuclei: "nuclei"
+  nikto: "nikto"
+  testssl: "testssl.sh"
+  # Safety rails
+  nuclei_rate_limit: 150
+  nmap_top_ports: 1000
+  request_timeout: 20

@@ -1,0 +1,21 @@
+# T4WF1Q VMS
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime data (never commit scan data / secrets)
+data/
+*.db
+*.sqlite3
+config.yaml
+reports/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

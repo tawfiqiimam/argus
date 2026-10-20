@@ -1,0 +1,24 @@
+services:
+  t4wf1q:
+    build: .
+    container_name: t4wf1q-vms
+    ports:
+      - "127.0.0.1:8000:8000"     # bind to localhost only by default
+    environment:
+      # generate: python -c "import secrets;print(secrets.token_urlsafe(32))"
+      T4WF1Q_API_KEY: "${T4WF1Q_API_KEY:-change-me-please}"
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./config.yaml:/app/config.yaml:ro
+    restart: unless-stopped
+
+  # Optional local test target — a deliberately vulnerable app.
+  # Add "juice-shop.local" to scope.allow in config.yaml to scan it.
+  juice-shop:
+    image: bkimminich/juice-shop
+    container_name: t4wf1q-juiceshop
+    ports:
+      - "127.0.0.1:3000:3000"
+    profiles: ["lab"]             # start with: docker compose --profile lab up
+    restart: unless-stopped
