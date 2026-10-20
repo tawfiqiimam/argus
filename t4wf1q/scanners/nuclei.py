@@ -41,6 +41,12 @@ def scan(ctx: ScanContext, urls: list[str]) -> list[Finding]:
         sev = normalize_severity(info.get("severity"))
         classif = info.get("classification") or {}
         cvss = classif.get("cvss-score")
+        cve = classif.get("cve-id")
+        cwe = classif.get("cwe-id")
+        if isinstance(cve, list):
+            cve = ", ".join(cve) or None
+        if isinstance(cwe, list):
+            cwe = ", ".join(cwe) or None
         tags = " ".join(info.get("tags", []) if isinstance(info.get("tags"), list) else [str(info.get("tags"))])
         findings.append(Finding(
             title=name,
@@ -55,6 +61,7 @@ def scan(ctx: ScanContext, urls: list[str]) -> list[Finding]:
                      or j.get("matcher-name"),
             remediation=info.get("remediation"),
             reference=info.get("reference") or [],
+            cve=cve, cwe=cwe, confidence="high",
         ))
 
     ctx.log("info", f"nuclei: {len(findings)} finding(s)")

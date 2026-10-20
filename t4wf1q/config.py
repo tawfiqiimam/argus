@@ -39,6 +39,8 @@ _DEFAULTS: dict[str, Any] = {
         "nuclei_rate_limit": 150,
         "nmap_top_ports": 1000,
         "request_timeout": 20,
+        "request_delay": 0.2,
+        "concurrency": 5,
     },
 }
 

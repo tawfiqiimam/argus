@@ -112,7 +112,9 @@
       <h3><span class="pill s-{{ f.severity }}">{{ f.severity|upper }}</span> &nbsp; {{ f.title }}</h3>
       <div class="kv">Location: <span class="mono">{{ f.location or f.host or '—' }}</span></div>
       <div class="kv">OWASP: {{ f.owasp or '—' }} · Source: {{ f.source }} · Status: {{ f.status }}
-        {% if f.cvss %} · CVSS: {{ f.cvss }}{% endif %}</div>
+        {% if f.cvss %} · CVSS: {{ f.cvss }}{% endif %}
+        {% if f.confidence %} · Confidence: {{ f.confidence }}{% endif %}
+        {% if f.cve %} · {{ f.cve }}{% endif %}{% if f.cwe %} · {{ f.cwe }}{% endif %}</div>
       {% if f.description %}<p>{{ f.description }}</p>{% endif %}
       {% if f.evidence %}<div class="kv">Evidence: <span class="mono">{{ f.evidence }}</span></div>{% endif %}
       {% if f.remediation %}<p><strong>Fix:</strong> {{ f.remediation }}</p>{% endif %}

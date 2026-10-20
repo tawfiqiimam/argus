@@ -11,3 +11,4 @@ python-dateutil==2.9.0.post0
 # Optional: PDF reports (pure-python). If weasyprint system deps are missing,
 # the app falls back to standalone HTML reports automatically.
 weasyprint==63.1
+dnspython==2.7.0

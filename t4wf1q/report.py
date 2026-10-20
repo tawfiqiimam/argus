@@ -1,6 +1,9 @@
 """Auto report generation: self-contained HTML, optional PDF via WeasyPrint."""
 from __future__ import annotations
 
+import csv
+import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -72,3 +75,71 @@ def generate(cfg: Config, asset_id: str, scan_id: str | None = None) -> Path | N
 def _sev_key(f: dict) -> int:
     order = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
     return order.get(f["severity"], 0)
+
+
+# ---------------------------------------------------------------- JSON / CSV export
+_SECRET_RE = re.compile(r"(?i)(password|passwd|secret|token|api[_-]?key|authorization)(\s*[:=]\s*)(\S+)")
+_AWS_RE = re.compile(r"AKIA[0-9A-Z]{16}")
+COLUMNS = ["severity", "title", "owasp", "cve", "cwe", "confidence", "cvss", "location",
+           "host", "source", "status", "description", "evidence", "remediation",
+           "first_seen", "last_seen", "seen_count"]
+
+
+def redact(text):
+    """Mask credentials that may appear in evidence before they leave the system."""
+    if not text:
+        return text
+    out = _SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", str(text))
+    return _AWS_RE.sub("[REDACTED-AWS-KEY]", out)
+
+
+def _csv_safe(v) -> str:
+    """Stop spreadsheet formula injection when the CSV is opened in Excel/Sheets."""
+    if v is None:
+        return ""
+    s = str(v)
+    return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
+
+
+def export(cfg: Config, asset_id: str, fmt: str):
+    asset = db.get_asset(asset_id)
+    if not asset:
+        return None
+    if fmt not in ("json", "csv"):
+        raise ValueError("unsupported format")
+    findings = db.list_findings(asset_id=asset_id, limit=5000)
+    counts = db.severity_counts(asset_id)
+    rows = []
+    for f in findings:
+        rows.append({
+            "severity": f["severity"], "title": redact(f["title"]), "owasp": f.get("owasp") or "",
+            "cve": f.get("cve") or "", "cwe": f.get("cwe") or "", "confidence": f.get("confidence") or "",
+            "cvss": f.get("cvss") or "", "location": redact(f.get("location") or ""),
+            "host": f.get("host") or "", "source": f.get("source") or "", "status": f["status"],
+            "description": redact(f.get("description") or ""),
+            "evidence": redact(f.get("evidence") or ""),
+            "remediation": redact(f.get("remediation") or ""),
+            "first_seen": f["first_seen"], "last_seen": f["last_seen"], "seen_count": f["seen_count"],
+        })
+    cfg.reports_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe = "".join(c if c.isalnum() else "_" for c in (asset.get("name") or asset["target"]))[:40]
+    base = cfg.reports_dir / f"Argus_{safe}_{stamp}"
+    if fmt == "json":
+        doc = {
+            "tool": "Argus",
+            "generated": datetime.now(timezone.utc).isoformat(),
+            "asset": {"id": asset["id"], "name": asset["name"], "target": asset["target"]},
+            "summary": {"counts": counts, "risk": risk_score(counts), "total": len(rows)},
+            "findings": rows,
+        }
+        p = base.with_suffix(".json")
+        p.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+        return p
+    p = base.with_suffix(".csv")
+    with open(p, "w", newline="", encoding="utf-8") as fh:
+        w = csv.DictWriter(fh, fieldnames=COLUMNS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({k: _csv_safe(r.get(k)) for k in COLUMNS})
+    return p

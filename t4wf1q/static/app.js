@@ -369,7 +369,7 @@ async function renderReports(v) {
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px">
       <label>Generate for</label>
       <select id="rAsset">${al.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select>
-      <button class="btn sm" onclick="genReport()">Generate report</button>
+      <button class="btn sm" onclick="genReport()">Generate report</button><button class="btn sm ghost" onclick="exportAsset('json')">JSON</button><button class="btn sm ghost" onclick="exportAsset('csv')">CSV</button>
     </div>
     ${reps.length ? `<table><thead><tr><th>Report</th><th>Size</th><th>Created</th><th></th></tr></thead><tbody>
       ${reps.map(r => `<tr><td class="mono">${esc(r.name)}</td>
@@ -541,7 +541,7 @@ function openScanDialog() {
           <option value="web">web — http + nuclei</option>
           <option value="recon">recon — subdomains only</option>
           <option value="network">network — nmap</option>
-          <option value="quick">quick</option></select></div>
+          <option value="quick">quick</option><option value="passive">passive — subdomains + takeover</option><option value="api">api — API security</option><option value="wordpress">wordpress — WP assessment</option><option value="infra">infra — domain & infrastructure</option><option value="code">code — secrets + SAST (local path)</option><option value="dependency">dependency — trivy (local path)</option><option value="full">full — everything authorized</option></select></div>
     </div>
     <div class="authbox">
       <label class="chkline"><input type="checkbox" id="nsAuth">
@@ -609,3 +609,16 @@ if (S.key) {
   api("/api/stats").then(() => { $("#gate").classList.add("hide"); boot(); })
     .catch(() => openGate());
 } else openGate();
+
+
+window.exportAsset = async (fmt) => {
+  const aid = $("#rAsset").value;
+  const r = await fetch(`/api/assets/${aid}/export/${fmt}`, { headers: { "x-api-key": S.key } });
+  if (!r.ok) { toast("Export failed"); return; }
+  const blob = await r.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `argus-${aid}.${fmt}`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+};

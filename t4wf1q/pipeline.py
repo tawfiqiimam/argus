@@ -1,32 +1,55 @@
-"""Scan orchestration pipeline.
+"""Scan orchestration pipeline (runs in a background worker thread).
 
-Runs in a background worker thread. Each stage logs to the DB and publishes a
-live event to the WebSocket bus so the dashboard updates in real time.
-
-Stages:  RECON -> PROBE -> SCAN -> DEDUP/STORE -> SCORE -> ALERT/REPORT
+Stages always run in the fixed, safe order of STAGE_ORDER; a profile decides
+which of them apply. Each stage is isolated: a failing tool is recorded as a
+stage error and the scan continues with partial results. Progress and log lines
+go to the database and the WebSocket bus.
 """
 from __future__ import annotations
 
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
+from urllib.parse import urlparse
 
-from . import db, events
+from . import alerts, db, events, report
 from .config import Config
-from .scope import ScopeGuard, extract_host, looks_like_domain
-from .scanners import recon, nuclei, nmap, httpchecks
+from .scanners import (code_extra, httpchecks, nmap, nuclei, paths, recon,
+                       recon_extra, takeover, web_extra, xss)
 from .scanners.base import ScanContext
-from . import alerts, report
-from .scoring import normalize_severity, meets_threshold
+from .scope import ScopeGuard, extract_host, looks_like_domain
+from .scoring import meets_threshold, normalize_severity
+
+STAGE_ORDER = [
+    "recon", "takeover", "probe", "whatweb", "discover", "http", "paths", "xss",
+    "dalfox", "nuclei", "nikto", "testssl", "wpscan", "nmap",
+    "gitleaks", "semgrep", "trivy",
+]
+
+_API_PATHS = {"api", "config", "debug", "vcs", "secrets", "dev", "admin", "robots"}
+_WP_PATHS = {"wp", "config", "debug", "backup", "vcs", "secrets", "robots"}
 
 PROFILES = {
-    "owasp-full": ["recon", "probe", "http", "nuclei", "nmap"],
-    "web":        ["probe", "http", "nuclei"],
-    "network":    ["nmap"],
-    "recon":      ["recon", "probe"],
-    "quick":      ["probe", "http"],
+    "passive":    {"label": "Passive Reconnaissance", "stages": ["recon", "takeover"]},
+    "recon":      {"label": "Recon only", "stages": ["recon", "probe", "takeover"]},
+    "quick":      {"label": "Quick checks", "stages": ["probe", "http"]},
+    "web":        {"label": "Web Application Assessment",
+                   "stages": ["probe", "whatweb", "http", "paths", "xss", "nuclei"]},
+    "api":        {"label": "API Security Assessment",
+                   "stages": ["probe", "discover", "http", "paths", "xss", "nuclei"],
+                   "path_categories": _API_PATHS},
+    "infra":      {"label": "Domain & Infrastructure Assessment",
+                   "stages": ["recon", "probe", "takeover", "nmap", "testssl", "nikto"]},
+    "wordpress":  {"label": "WordPress Assessment",
+                   "stages": ["probe", "whatweb", "paths", "wpscan", "dalfox", "nuclei"],
+                   "path_categories": _WP_PATHS, "force_wpscan": True},
+    "code":       {"label": "Source Code Security Assessment", "stages": ["gitleaks", "semgrep"]},
+    "dependency": {"label": "Dependency & Container Assessment", "stages": ["trivy"]},
+    "owasp-full": {"label": "OWASP Top 10 web + network",
+                   "stages": ["recon", "probe", "takeover", "whatweb", "discover", "http",
+                              "paths", "xss", "dalfox", "nuclei", "nikto", "testssl", "nmap"]},
 }
+PROFILES["full"] = {"label": "Full Authorized Assessment", "stages": list(STAGE_ORDER)}
 
 _queue: "Queue[tuple[str,str]]" = Queue()
 _worker_started = False
@@ -43,8 +66,7 @@ def start_worker(cfg: Config) -> None:
         if _worker_started:
             return
         _worker_started = True
-    t = threading.Thread(target=_worker_loop, args=(cfg,), daemon=True, name="t4wf1q-worker")
-    t.start()
+    threading.Thread(target=_worker_loop, args=(cfg,), daemon=True, name="argus-worker").start()
 
 
 def _worker_loop(cfg: Config) -> None:
@@ -68,112 +90,211 @@ def _mk_log(scan_id: str, asset_id: str):
     return log
 
 
-def _set_stage(scan_id, stage, progress, log):
+def _set_stage(scan_id: str, stage: str, progress: int, log) -> None:
     db.update_scan(scan_id, stage=stage, progress=progress, status="running")
     events.publish("scan_update", scan_id=scan_id, stage=stage, progress=progress, status="running")
     log("info", f"stage: {stage}")
+
+
+def _fallback(ctx: ScanContext) -> str:
+    t = ctx.asset["target"]
+    return t if "://" in t else f"https://{t}"
+
+
+def _live(ctx: ScanContext, st: dict) -> list[str]:
+    return st["live"] or [_fallback(ctx)]
+
+
+# ---------------------------------------------------------------- stages
+def _s_recon(ctx, st, guard, prof):
+    root = st["root"]
+    if not looks_like_domain(root):
+        ctx.log("info", "recon: target is not a domain, subdomain enumeration skipped")
+        return
+    found = recon.enumerate_subdomains(ctx, root)
+    ok_hosts = guard.in_scope_hosts(found)
+    if len(ok_hosts) < len(found):
+        ctx.log("warn", f"scope: {len(found) - len(ok_hosts)} discovered host(s) out of scope, skipped")
+    st["hosts"] = ok_hosts or [root]
+    for h in st["hosts"]:
+        db.upsert_subdomain(ctx.asset["id"], h)
+
+
+def _s_takeover(ctx, st, guard, prof):
+    hosts = st["hosts"] or [st["root"]]
+    st["findings"] += takeover.scan(ctx, hosts, guard)
+
+
+def _s_probe(ctx, st, guard, prof):
+    live: list[str] = []
+    for rec in recon.probe_hosts(ctx, st["hosts"] or [st["root"]]):
+        host = rec.get("host")
+        if not host:
+            continue
+        db.upsert_subdomain(ctx.asset["id"], host, alive=1 if rec.get("url") else 0,
+                            status_code=rec.get("status"), title=rec.get("title"),
+                            tech=rec.get("tech") or [])
+        if rec.get("url"):
+            live.append(rec["url"])
+            st["tech"][host] = rec.get("tech") or []
+            events.publish("subdomain", scan_id=ctx.scan_id, asset_id=ctx.asset["id"], **rec)
+    if live:
+        st["live"] = list(dict.fromkeys(live))
+
+
+def _s_whatweb(ctx, st, guard, prof):
+    for host, techs in recon_extra.whatweb(ctx, _live(ctx, st)[:40]).items():
+        st["tech"][host] = list(dict.fromkeys(st["tech"].get(host, []) + techs))
+
+
+def _s_discover(ctx, st, guard, prof):
+    found = recon_extra.discover_urls(ctx, st["hosts"] or [st["root"]])
+    ok = [u for u in found if guard.check(u)[0]][:300]
+    st["discovered"] = ok
+    st["live"] = list(dict.fromkeys(_live(ctx, st) + ok))
+
+
+def _s_http(ctx, st, guard, prof):
+    st["findings"] += httpchecks.scan(ctx, _live(ctx, st)[:60])
+
+
+def _s_paths(ctx, st, guard, prof):
+    st["findings"] += paths.scan(ctx, _live(ctx, st), categories=prof.get("path_categories"), guard=guard)
+
+
+def _s_xss(ctx, st, guard, prof):
+    st["findings"] += xss.scan(ctx, _live(ctx, st) + st["discovered"], guard=guard)
+
+
+def _s_dalfox(ctx, st, guard, prof):
+    urls = [u for u in _live(ctx, st) + st["discovered"] if guard.check(u)[0]][:20]
+    st["findings"] += web_extra.dalfox(ctx, urls)
+
+
+def _s_nuclei(ctx, st, guard, prof):
+    st["findings"] += nuclei.scan(ctx, _live(ctx, st))
+
+
+def _s_nikto(ctx, st, guard, prof):
+    st["findings"] += web_extra.nikto(ctx, _live(ctx, st)[:10])
+
+
+def _s_testssl(ctx, st, guard, prof):
+    st["findings"] += web_extra.testssl(ctx, _live(ctx, st)[:20])
+
+
+def _s_wpscan(ctx, st, guard, prof):
+    urls = [u for u in _live(ctx, st)
+            if any("wordpress" in t.lower() for t in st["tech"].get(urlparse(u).hostname or "", []))]
+    if not urls and prof.get("force_wpscan"):
+        urls = _live(ctx, st)[:5]
+    if not urls:
+        ctx.log("info", "wpscan: no WordPress detected, skipped")
+        return
+    st["findings"] += web_extra.wpscan(ctx, [u for u in urls if guard.check(u)[0]][:10])
+
+
+def _s_nmap(ctx, st, guard, prof):
+    hosts = sorted({extract_host(u) for u in _live(ctx, st)} - {""})[:20]
+    st["findings"] += nmap.scan(ctx, hosts)
+
+
+def _code_guard(ctx) -> bool:
+    if code_extra._local_path(ctx):
+        return True
+    ctx.log("info", "code stage skipped: target is not a local directory (use a file path target)")
+    return False
+
+
+def _s_gitleaks(ctx, st, guard, prof):
+    if _code_guard(ctx):
+        st["findings"] += code_extra.gitleaks(ctx)
+
+
+def _s_semgrep(ctx, st, guard, prof):
+    if _code_guard(ctx):
+        st["findings"] += code_extra.semgrep(ctx)
+
+
+def _s_trivy(ctx, st, guard, prof):
+    if _code_guard(ctx):
+        st["findings"] += code_extra.trivy(ctx)
+
+
+STAGE_FUNCS = {
+    "recon": _s_recon, "takeover": _s_takeover, "probe": _s_probe, "whatweb": _s_whatweb,
+    "discover": _s_discover, "http": _s_http, "paths": _s_paths, "xss": _s_xss,
+    "dalfox": _s_dalfox, "nuclei": _s_nuclei, "nikto": _s_nikto, "testssl": _s_testssl,
+    "wpscan": _s_wpscan, "nmap": _s_nmap, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
+    "trivy": _s_trivy,
+}
+
+
+# ---------------------------------------------------------------- store + run
+def _store(ctx: ScanContext, st: dict, cfg: Config, threshold: str) -> tuple[int, dict]:
+    aid = ctx.asset["id"]
+    new = 0
+    tally = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for f in st["findings"]:
+        d = f.to_dict()
+        d["severity"] = normalize_severity(d["severity"])
+        tally[d["severity"]] += 1
+        stored, is_new = db.upsert_finding(aid, ctx.scan_id, d)
+        if is_new:
+            new += 1
+            events.publish("finding", scan_id=ctx.scan_id, asset_id=aid, id=stored["id"],
+                           title=stored["title"], severity=stored["severity"],
+                           owasp=stored.get("owasp"), host=stored.get("host"),
+                           location=stored.get("location"))
+            if meets_threshold(d["severity"], threshold):
+                alerts.notify(cfg, ctx.asset, stored)
+    return new, tally
 
 
 def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
     asset = db.get_asset(asset_id)
     if not asset:
         return
-    scan = db.get_scan(scan_id)
-    profile = scan["profile"] if scan else "owasp-full"
-    stages = PROFILES.get(profile, PROFILES["owasp-full"])
+    scan = db.get_scan(scan_id) or {}
+    profile = scan.get("profile") or "owasp-full"
+    prof = PROFILES.get(profile, PROFILES["owasp-full"])
+    wanted = set(prof["stages"])
+    active = [s for s in STAGE_ORDER if s in wanted]
+
     log = _mk_log(scan_id, asset_id)
-    guard = ScopeGuard.from_config(cfg)
-    scanners_cfg = cfg.get("scanners", default={})
-
-    db.update_scan(scan_id, status="running", stage="start", progress=1,
-                   started_at=db.now_iso())
-    events.publish("scan_update", scan_id=scan_id, status="running", progress=1)
-    log("info", f"=== Argus scan start · profile={profile} · target={asset['target']} ===")
-
+    guard = ScopeGuard.from_db()   # live, UI-managed scope
     ctx = ScanContext(asset=asset, scan_id=scan_id, cfg=cfg, log=log,
-                      scanners_cfg=scanners_cfg)
+                      scanners_cfg=cfg.get("scanners", default={}))
+    root = extract_host(asset["target"])
+    st = {"root": root, "hosts": [root] if root else [], "live": [], "tech": {},
+          "discovered": [], "findings": [], "errors": []}
 
-    root_host = extract_host(asset["target"])
-    ctx.hosts = [root_host] if root_host else []
-    ctx.targets = [asset["target"]]
+    db.update_scan(scan_id, status="running", stage="start", progress=1, started_at=db.now_iso())
+    events.publish("scan_update", scan_id=scan_id, status="running", progress=1)
+    log("info", f"=== Argus scan start · {prof['label']} · target={asset['target']} ===")
+    log("info", f"stages: {', '.join(active)}")
 
-    # ---- RECON (subdomain enum) ----
-    if "recon" in stages and looks_like_domain(root_host):
-        _set_stage(scan_id, "recon", 10, log)
-        discovered = recon.enumerate_subdomains(ctx, root_host)
-        in_scope = guard.in_scope_hosts(discovered)
-        dropped = len(discovered) - len(in_scope)
-        if dropped:
-            log("warn", f"scope: {dropped} discovered host(s) out of scope, skipped")
-        ctx.hosts = in_scope or [root_host]
-        for h in ctx.hosts:
-            db.upsert_subdomain(asset_id, h)
+    for i, stage in enumerate(active):
+        _set_stage(scan_id, stage, 5 + int(85 * i / max(1, len(active))), log)
+        try:
+            STAGE_FUNCS[stage](ctx, st, guard, prof)
+        except Exception as e:
+            msg = f"{stage} failed: {type(e).__name__}: {str(e)[:160]}"
+            st["errors"].append(msg)
+            log("error", msg)
 
-    # ---- PROBE (liveness + tech) ----
-    live_urls: list[str] = []
-    if "probe" in stages:
-        _set_stage(scan_id, "probe", 25, log)
-        records = recon.probe_hosts(ctx, ctx.hosts)
-        for rec in records:
-            if not rec.get("host"):
-                continue
-            db.upsert_subdomain(asset_id, rec["host"], alive=1 if rec.get("url") else 0,
-                                status_code=rec.get("status"), title=rec.get("title"),
-                                tech=rec.get("tech", []))
-            if rec.get("url"):
-                live_urls.append(rec["url"])
-                events.publish("subdomain", scan_id=scan_id, asset_id=asset_id, **rec)
-    if not live_urls:
-        # fall back to the asset target itself
-        t = asset["target"]
-        live_urls = [t if "://" in t else f"https://{t}"]
-
-    all_findings = []
-
-    # ---- HTTP checks (always-available, pure python) ----
-    if "http" in stages:
-        _set_stage(scan_id, "http-checks", 45, log)
-        all_findings += httpchecks.scan(ctx, live_urls)
-
-    # ---- NUCLEI ----
-    if "nuclei" in stages:
-        _set_stage(scan_id, "nuclei", 65, log)
-        all_findings += nuclei.scan(ctx, live_urls)
-
-    # ---- NMAP ----
-    if "nmap" in stages:
-        _set_stage(scan_id, "nmap", 80, log)
-        scan_hosts = sorted({extract_host(u) for u in live_urls if extract_host(u)})
-        all_findings += nmap.scan(ctx, scan_hosts)
-
-    # ---- DEDUP + STORE ----
-    _set_stage(scan_id, "store", 90, log)
-    new_count = 0
-    sev_tally = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-    alert_threshold = cfg.get("alerts", "min_severity", default="high")
-    for f in all_findings:
-        d = f.to_dict()
-        d["severity"] = normalize_severity(d["severity"])
-        sev_tally[d["severity"]] += 1
-        stored, is_new = db.upsert_finding(asset_id, scan_id, d)
-        if is_new:
-            new_count += 1
-            events.publish("finding", scan_id=scan_id, asset_id=asset_id,
-                           id=stored["id"], title=stored["title"],
-                           severity=stored["severity"], owasp=stored.get("owasp"),
-                           host=stored.get("host"), location=stored.get("location"))
-            if meets_threshold(d["severity"], alert_threshold):
-                alerts.notify(cfg, asset, stored)
-
-    # ---- SCORE + FINISH ----
+    _set_stage(scan_id, "store", 92, log)
+    new, tally = _store(ctx, st, cfg, cfg.get("alerts", "min_severity", default="high"))
     db.touch_asset_scan(asset_id)
-    stats = {"total": len(all_findings), "new": new_count, **sev_tally}
+    stats = {"total": len(st["findings"]), "new": new, **tally, "stages": active,
+             "hosts": len(st["hosts"]), "urls": len(_live(ctx, st)),
+             "errors": st["errors"][:20]}
     db.update_scan(scan_id, status="done", stage="done", progress=100,
                    finished_at=db.now_iso(), stats=stats)
-    log("info", f"=== scan complete · {len(all_findings)} finding(s), {new_count} new ===")
+    log("info", f"=== scan complete · {stats['total']} finding(s), {new} new, "
+                f"{len(st['errors'])} stage error(s) ===")
     events.publish("scan_update", scan_id=scan_id, status="done", progress=100, stats=stats)
 
-    # ---- AUTO REPORT ----
     try:
         path = report.generate(cfg, asset_id, scan_id)
         if path:

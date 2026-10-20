@@ -135,6 +135,15 @@ def init(db_path: Path) -> None:
         _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         with _connect() as c:
             c.executescript(SCHEMA)
+            _migrate(c)
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """Add columns to existing databases (backward compatible)."""
+    cols = {r["name"] for r in c.execute("PRAGMA table_info(findings)")}
+    for col, decl in (("cve", "TEXT"), ("cwe", "TEXT"), ("confidence", "TEXT")):
+        if col not in cols:
+            c.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
 
 
 def _connect() -> sqlite3.Connection:
@@ -305,12 +314,14 @@ def upsert_finding(asset_id: str, scan_id: str, f: dict) -> tuple[dict, bool]:
         c.execute(
             "INSERT INTO findings(id,asset_id,scan_id,fingerprint,title,severity,cvss,owasp,"
             "host,location,source,description,evidence,remediation,reference,status,"
-            "first_seen,last_seen,seen_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1)",
+            "first_seen,last_seen,seen_count,cve,cwe,confidence)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
             (
                 fid, asset_id, scan_id, fp, f["title"], f["severity"], f.get("cvss"),
                 f.get("owasp"), f.get("host"), f.get("location"), f.get("source"),
                 f.get("description"), f.get("evidence"), f.get("remediation"),
                 json.dumps(f.get("reference", [])), "open", ts, ts,
+                f.get("cve"), f.get("cwe"), f.get("confidence"),
             ),
         )
         return get_finding(fid), True

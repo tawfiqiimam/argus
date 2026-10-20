@@ -4,12 +4,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, events, pipeline, report
+from . import db, events, pipeline, report, tools
 from .config import get_config
 from .scheduler import Scheduler
 from .scope import ScopeGuard, extract_host, looks_like_domain
@@ -108,7 +108,7 @@ def health():
 
 
 @app.get("/api/config")
-def api_config(_=require_key):  # noqa: B008
+def api_config(_=Depends(require_key)):  # noqa: B008
     g = current_guard()
     return {
         "scope_enforced": g.enforce,
@@ -126,7 +126,7 @@ def api_config(_=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- assets
 @app.get("/api/assets")
-def get_assets(_=require_key):  # noqa: B008
+def get_assets(_=Depends(require_key)):  # noqa: B008
     out = []
     for a in db.list_assets():
         counts = db.severity_counts(a["id"])
@@ -138,7 +138,7 @@ def get_assets(_=require_key):  # noqa: B008
 
 
 @app.post("/api/assets")
-def create_asset(body: AssetIn, _=require_key):  # noqa: B008
+def create_asset(body: AssetIn, _=Depends(require_key)):  # noqa: B008
     guard = current_guard()
     ok, reason = guard.check(body.target)
     if not ok:
@@ -161,7 +161,7 @@ def create_asset(body: AssetIn, _=require_key):  # noqa: B008
 
 
 @app.get("/api/assets/{aid}")
-def asset_detail(aid: str, _=require_key):  # noqa: B008
+def asset_detail(aid: str, _=Depends(require_key)):  # noqa: B008
     a = db.get_asset(aid)
     if not a:
         raise HTTPException(404, "asset not found")
@@ -174,14 +174,14 @@ def asset_detail(aid: str, _=require_key):  # noqa: B008
 
 
 @app.delete("/api/assets/{aid}")
-def remove_asset(aid: str, _=require_key):  # noqa: B008
+def remove_asset(aid: str, _=Depends(require_key)):  # noqa: B008
     db.delete_asset(aid)
     return {"ok": True}
 
 
 # ---------------------------------------------------------------- scans
 @app.post("/api/assets/{aid}/scan")
-def start_scan(aid: str, body: ScanIn, _=require_key):  # noqa: B008
+def start_scan(aid: str, body: ScanIn, _=Depends(require_key)):  # noqa: B008
     asset = db.get_asset(aid)
     if not asset:
         raise HTTPException(404, "asset not found")
@@ -196,12 +196,12 @@ def start_scan(aid: str, body: ScanIn, _=require_key):  # noqa: B008
 
 
 @app.get("/api/scans")
-def scans(asset_id: str | None = None, _=require_key):  # noqa: B008
+def scans(asset_id: str | None = None, _=Depends(require_key)):  # noqa: B008
     return db.list_scans(asset_id)
 
 
 @app.get("/api/scans/{sid}")
-def scan_detail(sid: str, _=require_key):  # noqa: B008
+def scan_detail(sid: str, _=Depends(require_key)):  # noqa: B008
     s = db.get_scan(sid)
     if not s:
         raise HTTPException(404, "scan not found")
@@ -213,12 +213,12 @@ def scan_detail(sid: str, _=require_key):  # noqa: B008
 # ---------------------------------------------------------------- findings
 @app.get("/api/findings")
 def findings(asset_id: str | None = None, severity: str | None = None,
-             status: str | None = None, owasp: str | None = None, _=require_key):  # noqa: B008
+             status: str | None = None, owasp: str | None = None, _=Depends(require_key)):  # noqa: B008
     return db.list_findings(asset_id, severity, status, owasp)
 
 
 @app.get("/api/findings/{fid}")
-def finding_detail(fid: str, _=require_key):  # noqa: B008
+def finding_detail(fid: str, _=Depends(require_key)):  # noqa: B008
     f = db.get_finding(fid)
     if not f:
         raise HTTPException(404, "finding not found")
@@ -226,7 +226,7 @@ def finding_detail(fid: str, _=require_key):  # noqa: B008
 
 
 @app.post("/api/findings/{fid}/status")
-def finding_status(fid: str, body: StatusIn, _=require_key):  # noqa: B008
+def finding_status(fid: str, body: StatusIn, _=Depends(require_key)):  # noqa: B008
     f = db.set_finding_status(fid, body.status)
     if not f:
         raise HTTPException(404, "finding not found")
@@ -236,7 +236,7 @@ def finding_status(fid: str, body: StatusIn, _=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- dashboard stats
 @app.get("/api/stats")
-def stats(_=require_key):  # noqa: B008
+def stats(_=Depends(require_key)):  # noqa: B008
     counts = db.severity_counts()
     assets = db.list_assets()
     return {
@@ -251,7 +251,7 @@ def stats(_=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- checklist
 @app.get("/api/assets/{aid}/checklist")
-def get_checklist(aid: str, _=require_key):  # noqa: B008
+def get_checklist(aid: str, _=Depends(require_key)):  # noqa: B008
     items = db.list_checklist(aid)
     if not items:
         db.ensure_checklist(aid, CATALOG)
@@ -260,7 +260,7 @@ def get_checklist(aid: str, _=require_key):  # noqa: B008
 
 
 @app.post("/api/assets/{aid}/checklist")
-def update_checklist(aid: str, body: ChecklistIn, _=require_key):  # noqa: B008
+def update_checklist(aid: str, body: ChecklistIn, _=Depends(require_key)):  # noqa: B008
     db.set_checklist(aid, body.item_key, body.state, body.note)
     items = db.list_checklist(aid)
     return {"items": items, "coverage": coverage(items)}
@@ -268,13 +268,13 @@ def update_checklist(aid: str, body: ChecklistIn, _=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- scope
 @app.get("/api/scope")
-def get_scope(_=require_key):  # noqa: B008
+def get_scope(_=Depends(require_key)):  # noqa: B008
     g = current_guard()
     return {"enforce": g.enforce, "allow": g.allow, "deny": g.deny, "rules": db.list_scope()}
 
 
 @app.post("/api/scope")
-def scope_add(body: ScopeAddIn, _=require_key):  # noqa: B008
+def scope_add(body: ScopeAddIn, _=Depends(require_key)):  # noqa: B008
     pattern = (body.pattern or "").strip().lower()
     if not pattern:
         raise HTTPException(400, "empty pattern")
@@ -287,13 +287,13 @@ def scope_add(body: ScopeAddIn, _=require_key):  # noqa: B008
 
 
 @app.delete("/api/scope/{rule_id}")
-def scope_remove(rule_id: str, _=require_key):  # noqa: B008
+def scope_remove(rule_id: str, _=Depends(require_key)):  # noqa: B008
     db.remove_scope(rule_id)
     return {"ok": True, "rules": db.list_scope()}
 
 
 @app.post("/api/scope/check")
-def scope_check(body: ScopeIn, _=require_key):  # noqa: B008
+def scope_check(body: ScopeIn, _=Depends(require_key)):  # noqa: B008
     g = current_guard()
     ok, reason = g.check(body.pattern)
     return {"host": extract_host(body.pattern), "allowed": ok, "reason": reason}
@@ -301,7 +301,7 @@ def scope_check(body: ScopeIn, _=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- settings
 @app.get("/api/settings")
-def get_settings(_=require_key):  # noqa: B008
+def get_settings(_=Depends(require_key)):  # noqa: B008
     return {
         "automation_enabled": bool(db.get_setting("automation_enabled", True)),
         "scope_enforce": bool(db.get_setting("scope_enforce", True)),
@@ -311,7 +311,7 @@ def get_settings(_=require_key):  # noqa: B008
 
 
 @app.post("/api/settings")
-def update_settings(body: SettingIn, _=require_key):  # noqa: B008
+def update_settings(body: SettingIn, _=Depends(require_key)):  # noqa: B008
     if body.automation_enabled is not None:
         db.set_setting("automation_enabled", bool(body.automation_enabled))
     if body.scope_enforce is not None:
@@ -321,7 +321,7 @@ def update_settings(body: SettingIn, _=require_key):  # noqa: B008
 
 # ---------------------------------------------------------------- reports
 @app.post("/api/assets/{aid}/report")
-def make_report(aid: str, _=require_key):  # noqa: B008
+def make_report(aid: str, _=Depends(require_key)):  # noqa: B008
     path = report.generate(cfg, aid)
     if not path:
         raise HTTPException(404, "asset not found")
@@ -329,7 +329,7 @@ def make_report(aid: str, _=require_key):  # noqa: B008
 
 
 @app.get("/api/reports")
-def list_reports(_=require_key):  # noqa: B008
+def list_reports(_=Depends(require_key)):  # noqa: B008
     cfg.reports_dir.mkdir(parents=True, exist_ok=True)
     files = sorted(cfg.reports_dir.glob("Argus_*"), key=lambda p: p.stat().st_mtime, reverse=True)
     return [{"name": p.name, "size": p.stat().st_size,
@@ -337,13 +337,29 @@ def list_reports(_=require_key):  # noqa: B008
 
 
 @app.get("/api/reports/{name}")
-def get_report(name: str, _=require_key):  # noqa: B008
+def get_report(name: str, _=Depends(require_key)):  # noqa: B008
     # prevent path traversal
     safe = Path(name).name
     path = cfg.reports_dir / safe
     if not path.exists():
         raise HTTPException(404, "report not found")
     return FileResponse(str(path))
+
+
+# ---------------------------------------------------------------- export + tools
+@app.get("/api/assets/{aid}/export/{fmt}")
+def export_asset(aid: str, fmt: str, _=Depends(require_key)):  # noqa: B008
+    if fmt not in ("json", "csv"):
+        raise HTTPException(400, "format must be json or csv")
+    path = report.export(cfg, aid, fmt)
+    if not path:
+        raise HTTPException(404, "asset not found")
+    return FileResponse(str(path), filename=path.name)
+
+
+@app.get("/api/tools")
+def tools_status(_=Depends(require_key)):  # noqa: B008
+    return tools.detect()
 
 
 # ---------------------------------------------------------------- websocket

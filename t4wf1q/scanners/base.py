@@ -55,6 +55,9 @@ class Finding:
     evidence: str | None = None
     remediation: str | None = None
     reference: list[str] = field(default_factory=list)
+    cve: str | None = None
+    cwe: str | None = None
+    confidence: str | None = None   # low | medium | high
 
     def to_dict(self) -> dict:
         d = self.__dict__.copy()
