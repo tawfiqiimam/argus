@@ -157,6 +157,9 @@ def get_assets(_=Depends(require_key)):  # noqa: B008
 @app.post("/api/assets")
 def create_asset(body: AssetIn, request: Request, _=Depends(require_key)):  # noqa: B008
     guard = current_guard()
+    # Store a wildcard as its root domain, so "*.x.com" and "x.com" are the same asset.
+    if body.target.strip().startswith("*."):
+        body.target = body.target.strip()[2:]
     host = extract_host(body.target)
     ok, reason = guard.check(body.target)
     # Authorize in one step from the UI, but never for a host the guard blocks

@@ -51,6 +51,17 @@ class ScopeGuardTests(unittest.TestCase):
         g = ScopeGuard(enforce=True, allow=["example.org"], deny=[])
         self.assertFalse(g.check("http://example.com/")[0])
 
+    def test_wildcard_target_is_the_root_domain(self):
+        from t4wf1q.scope import extract_host
+        self.assertEqual(extract_host("*.ezviz.com"), "ezviz.com")
+        self.assertEqual(extract_host("https://*.ezviz.com/x"), "ezviz.com")
+
+    def test_wildcard_allow_rule_covers_root_and_subdomains(self):
+        g = ScopeGuard(enforce=True, allow=["*.ezviz.com"], deny=[])
+        self.assertTrue(g.check("*.ezviz.com")[0])
+        self.assertTrue(g.check("https://www.ezviz.com/")[0])
+        self.assertFalse(g.check("https://ezviz.org/")[0])
+
     def test_deny_rule_wins_over_allow(self):
         g = ScopeGuard(enforce=True, allow=["example.org"], deny=["admin.example.org"])
         self.assertFalse(g.check("https://admin.example.org/")[0])
@@ -155,6 +166,27 @@ class AdapterParserTests(unittest.TestCase):
         self.assertEqual(out[0].cwe, "CWE-1021")
         self.assertEqual(out[0].description, "Clickjacking")
         self.assertEqual(out[0].source, "zap")
+
+    def test_zap_daemon_alerts_convert_and_group(self):
+        """core.alerts() output (API shape) must become the same findings as the report shape."""
+        alerts = [
+            {"alert": "X-Frame-Options Header Not Set", "riskcode": "2", "confidence": "Medium",
+             "cweid": "1021", "description": "<p>Clickjacking</p>", "solution": "<p>Set it</p>",
+             "url": "https://demo.test/a"},
+            {"alert": "X-Frame-Options Header Not Set", "riskcode": "2", "confidence": "Medium",
+             "cweid": "1021", "description": "<p>Clickjacking</p>", "solution": "<p>Set it</p>",
+             "url": "https://demo.test/b"},
+            {"alert": "Suspicious comment", "riskcode": "0", "confidence": "False Positive",
+             "cweid": "200", "description": "x", "solution": "", "url": "https://demo.test/c"},
+        ]
+        report = extra_tools.zap_alerts_to_report(alerts)
+        out = extra_tools.parse_zap(report, "demo.test", "https://demo.test/")
+        self.assertEqual(len(out), 1)                       # the false positive is dropped
+        self.assertEqual(out[0].title, "ZAP: X-Frame-Options Header Not Set")
+        self.assertEqual(out[0].severity, "medium")
+        self.assertEqual(out[0].confidence, "medium")
+        self.assertEqual(out[0].cwe, "CWE-1021")
+        self.assertIn("2 instance(s)", out[0].evidence)     # both URLs grouped under one rule
 
     def test_depcheck_extracts_cve_cvss_and_severity(self):
         data = {"dependencies": [{"fileName": "lodash-4.17.4.js", "vulnerabilities": [

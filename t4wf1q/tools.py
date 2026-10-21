@@ -23,7 +23,9 @@ TOOLS = [
     ("wpscan", "wpscan", ["--version"], "Vulnerability Assessment"),
     ("dalfox", "dalfox", ["version"], "Vulnerability Assessment"),
     ("sqlmap", "sqlmap", ["--version"], "Vulnerability Assessment"),
-    ("zap-baseline", "zap-baseline.py", [], "Vulnerability Assessment"),
+    # zaproxy is launched as a daemon by the adapter, so it is never run here for a version
+    # (that would start the GUI). None means "do not probe the version".
+    ("zaproxy", "zaproxy", None, "Vulnerability Assessment"),
     ("semgrep", "semgrep", ["--version"], "Code & Dependencies"),
     ("gitleaks", "gitleaks", ["version"], "Code & Dependencies"),
     ("trivy", "trivy", ["--version"], "Code & Dependencies"),
@@ -44,11 +46,11 @@ INSTALL_HINTS = {
     "wpscan": "sudo gem install wpscan",
     "dalfox": "go install github.com/hahwul/dalfox/v2@latest",
     "sqlmap": "sudo apt install -y sqlmap",
-    "zap-baseline": "sudo apt install -y zaproxy   # OWASP ZAP needs Java",
-    "semgrep": "pip install --break-system-packages semgrep",
+    "zaproxy": "sudo apt install -y zaproxy   # ZAP needs Java. ./update.sh adds the zapv2 module",
+    "semgrep": "./update.sh   (or: pipx install semgrep)",
     "gitleaks": "go install github.com/gitleaks/gitleaks/v8@latest",
     "trivy": "sudo apt install -y trivy",
-    "dependency-check": "download OWASP Dependency-Check from github.com/jeremylong/DependencyCheck/releases (needs Java 11+)",
+    "dependency-check": "./update.sh   (needs Java 11+; or download from github.com/dependency-check/DependencyCheck/releases)",
 }
 
 
@@ -57,7 +59,7 @@ def detect() -> list[dict]:
     for key, binary, vargs, category in TOOLS:
         path = shutil.which(binary)
         version = None
-        if path:
+        if path and vargs is not None:
             try:
                 p = subprocess.run([binary] + vargs, capture_output=True, text=True, timeout=10)
                 raw = (p.stdout or p.stderr or "").strip().splitlines()

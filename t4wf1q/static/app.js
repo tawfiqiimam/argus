@@ -293,10 +293,9 @@ window.quickHunt = async () => {
     const asset = await api("/api/assets", { method: "POST", body: JSON.stringify({
       target, kind: "program", add_to_scope: authorized, authorized }) });
     await api(`/api/assets/${asset.id}/scan`, { method: "POST", body: JSON.stringify({ profile: "owasp-full" }) });
-    toast("Hunt started ✓ — watching live");
-    S.view = "live"; $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "live"));
-    const [t, sub] = TITLES.live; $("#viewTitle").textContent = t; $("#viewSub").textContent = sub;
-    render();
+    $("#huntInput").value = "";
+    if (go) { go.disabled = false; go.textContent = "Start hunt"; }
+    scanStarted("Hunt started. It runs in the background.");
   } catch (e) {
     let msg = e.message.replace(/[{}"]/g, "").replace("detail:", "").trim().slice(0, 220);
     if (msg.toLowerCase().includes("out of scope"))
@@ -771,10 +770,8 @@ window.submitScan = async () => {
       target, name: $("#nsName").value.trim() || null, kind: $("#nsKind").value,
       add_to_scope: authorized, authorized }) });
     await api(`/api/assets/${asset.id}/scan`, { method: "POST", body: JSON.stringify({ profile: $("#nsProfile").value }) });
-    closeDrawer(); toast("Hunt started ✓");
-    S.view = "live"; $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "live"));
-    const [t, s] = TITLES.live; $("#viewTitle").textContent = t; $("#viewSub").textContent = s;
-    render();
+    closeDrawer();
+    scanStarted("Scan started. It runs in the background.");
   } catch (e) {
     let msg = e.message.replace(/[{}"]/g, "").replace("detail:", "").slice(0, 220);
     if (msg.includes("out of scope"))
@@ -785,10 +782,20 @@ window.submitScan = async () => {
 window.runScan = async (aid) => {
   const profile = "owasp-full";
   await api(`/api/assets/${aid}/scan`, { method: "POST", body: JSON.stringify({ profile }) });
-  closeDrawer(); toast("Scan queued ✓");
-  S.view = "live"; $$("#nav button").forEach(x => x.classList.toggle("active", x.dataset.view === "live"));
-  render();
+  closeDrawer();
+  scanStarted("Scan queued. It runs in the background.");
 };
+
+// A started scan never takes over the screen. The sidebar badge and the toast show it is
+// running; the console keeps filling in the background and opens with Live scan.
+function scanStarted(msg) {
+  toast(msg + " Open Live scan to watch.");
+  setActive(true);
+  loadActiveScan().then(() => {
+    if (S.view === "live") updateScanHeader();
+    if (S.view === "overview" || S.view === "assets") softRefresh();
+  });
+}
 
 function scansTable(ss) {
   if (!ss || !ss.length) return `<div class="empty"><strong>No scans yet</strong>Scans you start will be listed here.</div>`;

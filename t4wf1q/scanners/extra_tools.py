@@ -2,7 +2,7 @@
 OWASP Dependency-Check and SQLMap.
 
 Safety defaults:
-- ZAP runs the BASELINE scan (passive rules + short spider), never the active scanner.
+- ZAP runs passive rules plus a short spider through a local daemon, never the active scanner.
 - SQLMap runs only when the asset has an explicit `allow_intrusive` flag, uses
   level 1 / risk 1 / techniques BEU, extracts no data, and tests at most 3 URLs.
 - Every tool runs with an argument list (no shell), a timeout, and a private temp dir.
@@ -13,8 +13,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
+import socket
+import subprocess
 import tempfile
+import time
 from urllib.parse import urlparse
 
 from ..scoring import guess_owasp, normalize_severity
@@ -77,35 +81,123 @@ def parse_zap(data: dict, fallback_host: str | None, fallback_url: str) -> list[
     return out
 
 
-def _zap_bin(ctx: ScanContext) -> str | None:
-    name = ctx.scanners_cfg.get("zap_baseline", "zap-baseline.py")
-    if tool_available(name):
-        return name
-    for p in ("/usr/share/zaproxy/zap-baseline.py", "/usr/share/zaproxy/zap-baseline"):
-        if os.path.exists(p):
-            return p
-    return None
+_ZAP_CONF_CODE = {"false positive": "0", "low": "1", "medium": "2", "high": "3", "confirmed": "4"}
+
+
+def zap_alerts_to_report(alerts: list[dict]) -> dict:
+    """Convert ZAP API alerts (core.alerts) into the JSON-report shape parse_zap reads.
+
+    Alerts for the same rule, risk, confidence and CWE are grouped, with one instance per URL.
+    Pure function: testable without a running ZAP.
+    """
+    grouped: dict[tuple, dict] = {}
+    for a in alerts or []:
+        name = str(a.get("alert") or a.get("name") or "ZAP alert")
+        risk = str(a.get("riskcode", "0"))
+        conf = _ZAP_CONF_CODE.get(str(a.get("confidence", "")).strip().lower(), "1")
+        cweid = str(a.get("cweid", "") or "")
+        item = grouped.setdefault((name, risk, conf, cweid), {
+            "name": name, "riskcode": risk, "confidence": conf, "cweid": cweid,
+            "desc": a.get("description", ""), "solution": a.get("solution", ""), "instances": [],
+        })
+        if a.get("url"):
+            item["instances"].append({"uri": a["url"]})
+    return {"site": [{"alerts": list(grouped.values())}]}
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_until(check, timeout: float, what: str) -> None:
+    """Poll check() until it returns truthy. Errors from check count as 'not yet'."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            if check():
+                return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise TimeoutError(what)
 
 
 def zap_baseline(ctx: ScanContext, urls: list[str]) -> list[Finding]:
-    bin_ = _zap_bin(ctx)
-    if not bin_:
-        ctx.log("warn", "zap-baseline not found — skipping OWASP ZAP (sudo apt install zaproxy)")
+    """Passive rules plus a short spider, driven through a local ZAP daemon.
+
+    The active scanner is never started. The daemon listens on 127.0.0.1 only, with a
+    random API key, and is shut down when the stage ends.
+    Needs the `zaproxy` program and the `zapv2` Python module (see scripts/install-tools.sh).
+    """
+    binary = shutil.which("zaproxy")
+    if not binary:
+        ctx.log("warn", "OWASP ZAP not installed — skipping (run ./update.sh or: sudo apt install zaproxy)")
         return []
+    try:
+        from zapv2 import ZAPv2
+    except ImportError:
+        ctx.log("warn", "zapv2 module missing — skipping ZAP (sudo apt install python3-owasp-zap-v2.4)")
+        return []
+    targets = [u for u in urls if u][:3]
+    if not targets:
+        return []
+
+    port, api_key = _free_port(), secrets.token_hex(16)
+    home = tempfile.mkdtemp(prefix="argus_zap_")
+    proxy = f"http://127.0.0.1:{port}"
     out: list[Finding] = []
-    for url in urls[:3]:
-        host = urlparse(url).hostname
-        tmp = tempfile.mkdtemp(prefix="argus_zap_")
-        rep = os.path.join(tmp, "zap.json")
-        ctx.log("info", f"zap: baseline (passive rules + short spider) on {host}")
-        try:
-            run([bin_, "-t", url, "-J", rep, "-m", "2", "-I"], timeout=900)
-            with open(rep, encoding="utf-8") as fh:
-                out += parse_zap(json.load(fh), host, url)
-        except (OSError, ValueError) as e:
-            ctx.log("warn", f"zap: no usable report for {host} ({type(e).__name__})")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+    proc = None
+    zap = None
+    try:
+        ctx.log("info", "zap: starting the ZAP daemon (the first start can take a minute)")
+        proc = subprocess.Popen(
+            [binary, "-daemon", "-host", "127.0.0.1", "-port", str(port),
+             "-dir", home, "-config", f"api.key={api_key}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        zap = ZAPv2(apikey=api_key, proxies={"http": proxy, "https": proxy})
+        ready_by = time.monotonic() + 180
+        while True:                       # fail fast if the daemon process dies on start
+            if proc.poll() is not None:
+                raise RuntimeError("ZAP exited on start")
+            try:
+                zap.core.version()
+                break
+            except Exception:
+                if time.monotonic() > ready_by:
+                    raise TimeoutError("ZAP daemon start")
+                time.sleep(2)
+
+        for url in targets:
+            parsed = urlparse(url)
+            host = parsed.hostname
+            origin = f"{parsed.scheme}://{parsed.netloc}"
+            ctx.log("info", f"zap: passive rules + short spider on {host}")
+            try:
+                scan_id = zap.spider.scan(url, maxchildren=15)
+                _wait_until(lambda: int(zap.spider.status(scan_id)) >= 100, 180, "spider")
+                _wait_until(lambda: int(zap.pscan.records_to_scan()) == 0, 60, "passive scan")
+                alerts = zap.core.alerts(baseurl=origin)
+                out += parse_zap(zap_alerts_to_report(alerts), host, url)
+            except TimeoutError as e:
+                ctx.log("warn", f"zap: {host} did not finish in time ({e}); keeping what was found")
+            except Exception as e:
+                ctx.log("warn", f"zap: could not scan {host} ({type(e).__name__})")
+    except Exception as e:
+        ctx.log("warn", f"zap: daemon unavailable ({type(e).__name__}) — skipping ZAP")
+    finally:
+        if zap is not None:
+            try:
+                zap.core.shutdown()
+            except Exception:
+                pass
+        if proc is not None:
+            try:
+                proc.wait(timeout=30)
+            except Exception:
+                proc.kill()
+        shutil.rmtree(home, ignore_errors=True)
     ctx.log("info", f"zap: {len(out)} finding(s)")
     return out
 

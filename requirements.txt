@@ -12,3 +12,6 @@ python-dateutil==2.9.0.post0
 # the app falls back to standalone HTML reports automatically.
 weasyprint==63.1
 dnspython==2.7.0
+# OWASP ZAP driver. Argus talks to a local `zaproxy -daemon` through it. Unpinned because
+# the exact release could not be verified from the build environment.
+python-owasp-zap-v2.4

@@ -40,8 +40,12 @@ def extract_host(target: str) -> str:
         # could be host, host:port, or a path-like target
         t = "//" + t
     parsed = urlparse(t)
-    host = parsed.hostname or ""
-    return host.lower().rstrip(".")
+    host = (parsed.hostname or "").lower().rstrip(".")
+    # "*.example.com" means the whole domain tree, so the domain itself is what gets
+    # checked and enumerated. Without this, the literal "*" breaks DNS and recon.
+    if host.startswith("*."):
+        host = host[2:]
+    return host
 
 
 def _is_ip(value: str) -> bool:
