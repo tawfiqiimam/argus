@@ -3,61 +3,88 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Argus · Vulnerability Management System</title>
+<title>Argus · Vulnerability Management</title>
 <link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%237c3aed'/><text x='50' y='68' font-size='56' font-family='Arial' font-weight='700' text-anchor='middle' fill='white'>A</text></svg>">
 </head>
 <body>
+<a class="skip-link" href="#views">Skip to content</a>
+
 <div class="app">
   <aside class="sidebar">
-    <div class="logo"><span class="dot"></span> ARGUS
-      <small style="margin-left:4px">VMS · by T4WF1Q</small>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <div>
+        <div class="brand-name">Argus</div>
+        <div class="brand-sub">Vulnerability management · T4WF1Q</div>
+      </div>
     </div>
-    <nav class="nav" id="nav">
-      <button data-view="overview" class="active"><span class="ico">◈</span> Overview</button>
-      <button data-view="assets"><span class="ico">⬡</span> Assets</button>
-      <button data-view="findings"><span class="ico">⚠</span> Findings</button>
-      <button data-view="live"><span class="ico">⟲</span> Live Scan</button>
-      <button data-view="checklist"><span class="ico">✓</span> OWASP Checklist</button>
-      <button data-view="reports"><span class="ico">▤</span> Reports</button>
-      <button data-view="scope"><span class="ico">◎</span> Scope</button>
+
+    <nav class="nav" id="nav" aria-label="Main">
+      <div class="nav-label">Monitor</div>
+      <button data-view="overview" class="active" aria-current="page"><span class="ico" aria-hidden="true">◈</span>Overview</button>
+      <button data-view="live"><span class="ico" aria-hidden="true">⟲</span>Live scan <span class="badge hide" id="liveBadge">running</span></button>
+
+      <div class="nav-label">Assess</div>
+      <button data-view="assets"><span class="ico" aria-hidden="true">⬡</span>Assets</button>
+      <button data-view="findings"><span class="ico" aria-hidden="true">⚠</span>Findings</button>
+      <button data-view="checklist"><span class="ico" aria-hidden="true">✓</span>Manual checklist</button>
+      <button data-view="reports"><span class="ico" aria-hidden="true">▤</span>Reports</button>
+
+      <div class="nav-label">Governance</div>
+      <button data-view="scope"><span class="ico" aria-hidden="true">◎</span>Scope &amp; safety</button>
+      <button data-view="tools"><span class="ico" aria-hidden="true">⚙</span>Scanner tools</button>
+      <button data-view="audit"><span class="ico" aria-hidden="true">≣</span>Audit log</button>
     </nav>
-    <div class="foot">
-      Authorized testing only.<br>
-      <span class="chip" id="scopeChip">scope: loading…</span>
+
+    <div class="side-foot">
+      <div class="side-row"><span>Scope</span><span class="chip" id="scopeChip">loading…</span></div>
+      <p>Authorized testing only. Every scan is checked against scope before it starts.</p>
     </div>
   </aside>
 
-  <main class="main">
-    <div class="topbar">
-      <div>
+  <main class="main" id="main">
+    <header class="topbar">
+      <div class="titles">
         <h1 id="viewTitle">Overview</h1>
-        <div class="sub" id="viewSub">Program-wide security posture</div>
+        <p class="sub" id="viewSub">Program-wide security posture</p>
       </div>
-      <div style="display:flex;gap:10px;align-items:center">
-        <span class="livedot" id="liveDot"><i></i> realtime</span>
-        <button class="btn" id="newScanBtn">+ New Scan</button>
+      <div class="actions">
+        <span class="live" id="liveDot" title="Realtime connection"><i aria-hidden="true"></i><span id="liveText">Connecting</span></span>
+        <button class="btn danger-ghost" id="stopBtn" title="Cancel every running scan and turn automation off">Stop all scans</button>
+        <button class="btn" id="newScanBtn">New scan</button>
       </div>
+    </header>
+
+    <div class="banner hide" id="banner" role="status">
+      <span><strong>Emergency stop is on.</strong> No scans will start and automation is off until you resume.</span>
+      <button class="btn sm" id="resumeBtn">Resume scanning</button>
     </div>
+
     <div id="views"></div>
   </main>
 </div>
 
 <div class="overlay" id="overlay"></div>
-<div class="drawer" id="drawer"></div>
-<div class="toast" id="toast"></div>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-hidden="true"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <!-- API key gate -->
-<div id="gate" style="position:fixed;inset:0;background:var(--bg);z-index:100;display:flex;
-     align-items:center;justify-content:center;flex-direction:column;gap:14px">
-  <div class="logo" style="font-size:24px"><span class="dot"></span> ARGUS <small style="font-size:11px;margin-left:6px">by T4WF1Q</small></div>
-  <div class="panel" style="width:360px">
-    <h2>API key</h2>
-    <p class="muted" style="font-size:12px;margin:-6px 0 12px">
-      Paste the <span class="mono">api_key</span> from your <span class="mono">config.yaml</span>.</p>
-    <input id="keyInput" type="password" placeholder="api key" style="width:100%;margin-bottom:12px">
-    <button class="btn" id="keyBtn" style="width:100%;text-align:center">Connect</button>
-    <p id="keyErr" class="sev-crit" style="font-size:12px;margin:10px 0 0"></p>
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">A</span>
+      <div>
+        <div class="brand-name">Argus</div>
+        <div class="brand-sub">by T4WF1Q</div>
+      </div>
+    </div>
+    <h2>Sign in</h2>
+    <p class="muted">Paste the <code>api_key</code> value from your <code>config.yaml</code>.</p>
+    <label for="keyInput">API key</label>
+    <input id="keyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your API key">
+    <button class="btn block-btn" id="keyBtn">Connect</button>
+    <p id="keyErr" class="err" role="alert"></p>
   </div>
 </div>
 

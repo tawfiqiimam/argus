@@ -7,6 +7,7 @@ const S = {
   assets: [], findings: [], ws: null,
   logBuf: [], feedBuf: [], liveScan: null,
   owasp: {},
+  settings: {},
 };
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -40,13 +41,21 @@ $("#keyBtn").onclick = async () => {
 $("#keyInput").addEventListener("keydown", e => { if (e.key === "Enter") $("#keyBtn").click(); });
 
 // ---- websocket ----------------------------------------------
+// Realtime indicator in the top bar.
+function setLive(on, text) {
+  $("#liveDot").classList.toggle("on", on);
+  $("#liveText").textContent = text || (on ? "Live" : "Offline");
+}
+// Sidebar badge that shows while a scan is queued or running.
+function setActive(on) { $("#liveBadge").classList.toggle("hide", !on); }
+
 function connectWS() {
   if (S.ws) try { S.ws.close(); } catch {}
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?key=${encodeURIComponent(S.key)}`);
   S.ws = ws;
-  ws.onopen = () => $("#liveDot").classList.add("on");
-  ws.onclose = () => { $("#liveDot").classList.remove("on"); setTimeout(connectWS, 3000); };
+  ws.onopen = () => setLive(true, "Live");
+  ws.onclose = () => { setLive(false, "Reconnecting"); setTimeout(connectWS, 3000); };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
 }
 
@@ -63,10 +72,18 @@ function handleEvent(ev) {
     if (S.view === "overview" || S.view === "findings") softRefresh();
   } else if (ev.kind === "scan_update") {
     S.liveScan = { ...(S.liveScan || {}), ...ev };
+    setActive(ev.status === "running" || ev.status === "queued");
     if (S.view === "live") updateScanHeader();
-    if (ev.status === "done") { toast("Scan complete ✓"); softRefresh(); }
+    if (ev.status === "done") { toast("Scan complete. Results are ready."); softRefresh(); }
+    if (ev.status === "failed") toast("Scan failed. Check the console for details.");
+    if (ev.status === "cancelled") toast("Scan cancelled.");
   } else if (ev.kind === "subdomain") {
     if (S.view === "live") appendLog({ level: "info", message: `↳ live host: ${ev.host} [${ev.status || "?"}] ${ev.title || ""}` });
+  } else if (ev.kind === "emergency_stop") {
+    S.settings.emergency_stop = !!ev.engaged;
+    renderBanner();
+    toast(ev.engaged ? `Emergency stop on. ${ev.cancelled || 0} scan(s) cancelled.` : "Emergency stop cleared.");
+    if (S.view === "scope" || S.view === "live") render(true);
   } else if (ev.kind === "report_ready") {
     toast("Report generated ✓");
   }
@@ -77,33 +94,102 @@ function softRefresh() { clearTimeout(softTimer); softTimer = setTimeout(() => r
 
 // ---- navigation ---------------------------------------------
 const TITLES = {
-  overview: ["Overview", "Program-wide security posture"],
-  assets: ["Assets", "Targets under continuous assessment"],
-  findings: ["Findings", "Deduplicated, triaged vulnerabilities"],
-  live: ["Live Scan", "Real-time scan console & finding feed"],
-  checklist: ["OWASP Checklist", "Manual review coverage per asset"],
-  reports: ["Reports", "Auto-generated assessment reports"],
-  scope: ["Scope", "Authorized targets & safety guard"],
+  overview: ["Overview", "Your program's security posture at a glance"],
+  live: ["Live scan", "Watch a scan move through its stages, and stop it if needed"],
+  assets: ["Assets", "Targets under assessment"],
+  findings: ["Findings", "Review what was found, then confirm, accept, or close it"],
+  checklist: ["Manual checklist", "Hands-on checks that scanners can't cover"],
+  reports: ["Reports", "Assessment reports built from scan results"],
+  scope: ["Scope & safety", "What Argus may test, and the guardrails around it"],
+  tools: ["Scanner tools", "Security tools detected on this machine"],
+  audit: ["Audit log", "A record of scans, scope changes, and settings"],
 };
-$$("#nav button").forEach(b => b.onclick = () => {
-  S.view = b.dataset.view;
-  $$("#nav button").forEach(x => x.classList.toggle("active", x === b));
-  const [t, s] = TITLES[S.view]; $("#viewTitle").textContent = t; $("#viewSub").textContent = s;
+const PROFILE_LABELS = {
+  "owasp-full": "Full hunt (OWASP + network)", web: "Web application", recon: "Recon only",
+  network: "Network", quick: "Quick scan", passive: "Passive", api: "API security",
+  wordpress: "WordPress", infra: "Infrastructure", code: "Source code", dependency: "Dependencies",
+  full: "Everything authorized",
+};
+const STATUS_LABELS = {
+  new: "New", confirmed: "Confirmed", false_positive: "False positive", accepted_risk: "Accepted risk",
+  fixed: "Fixed", reopened: "Reopened", queued: "Queued", running: "Running", done: "Complete",
+  failed: "Failed", cancelled: "Cancelled",
+};
+const STAGE_LABELS = {
+  recon: "Subdomain discovery", amass: "Passive enumeration", takeover: "Takeover check",
+  probe: "Live host probe", whatweb: "Fingerprinting", discover: "Crawling", params: "Parameter review",
+  http: "Security headers", paths: "Exposed paths", xss: "XSS pattern check", dalfox: "XSS testing",
+  zap: "ZAP passive scan", nuclei: "Template scanning", nikto: "Web server checks", testssl: "TLS review",
+  wpscan: "WordPress checks", sqlmap: "SQL injection check", nmap: "Port scan", gitleaks: "Secret scan",
+  semgrep: "Code analysis", depcheck: "Dependency check", trivy: "Dependency scan",
+};
+const humanStage = (s) => STAGE_LABELS[s] || (s ? String(s).replace(/[_-]/g, " ") : "Preparing");
+const errText = (e) => String((e && e.message) || e || "").replace(/[{}"]/g, "").replace("detail:", "").trim().slice(0, 180);
+
+// One place to change views: keeps the sidebar, title and content in step.
+function go(view) {
+  S.view = view;
+  $$("#nav button").forEach(x => {
+    const on = x.dataset.view === view;
+    x.classList.toggle("active", on);
+    if (on) x.setAttribute("aria-current", "page"); else x.removeAttribute("aria-current");
+  });
+  const [t, s] = TITLES[view] || TITLES.overview;
+  $("#viewTitle").textContent = t; $("#viewSub").textContent = s;
   render();
-});
+}
+$$("#nav button").forEach(b => b.onclick = () => go(b.dataset.view));
 
 // ---- boot ---------------------------------------------------
 async function boot() {
   connectWS();
-  try {
-    const sc = await api("/api/scope");
-    $("#scopeChip").textContent = sc.enforce
-      ? `scope: ${sc.allow.length} allowed`
-      : "scope: OFF ⚠";
-  } catch {}
+  await refreshChrome();
+  await loadActiveScan();
   render();
 }
 
+// Scope chip and emergency banner, kept in sync with the server.
+async function refreshChrome() {
+  try {
+    const [sc, set] = await Promise.all([api("/api/scope"), api("/api/settings")]);
+    S.settings = set;
+    const chip = $("#scopeChip");
+    chip.textContent = sc.enforce ? `${sc.allow.length} allowed` : "Enforcement off";
+    chip.classList.toggle("warn", !sc.enforce);
+    chip.title = sc.enforce
+      ? "Scans only run against allowed targets."
+      : "Scope enforcement is off. Turn it on in Scope & safety.";
+  } catch {}
+  renderBanner();
+}
+function renderBanner() {
+  const on = !!S.settings.emergency_stop;
+  $("#banner").classList.toggle("hide", !on);
+  $("#stopBtn").disabled = on;
+}
+async function emergencyStop() {
+  if (!confirm("Stop all scans?\n\nThis cancels every queued and running scan and turns automation off. You can resume later.")) return;
+  try {
+    const r = await api("/api/emergency-stop", { method: "POST" });
+    S.settings.emergency_stop = true;
+    S.settings.automation_enabled = false;
+    renderBanner();
+    toast(`Stopped. ${r.cancelled} scan(s) cancelled.`);
+    await loadActiveScan();
+    if (S.view === "live") updateScanHeader();
+    if (S.view === "scope") render(true);
+  } catch (e) { toast("Could not stop scans: " + errText(e)); }
+}
+async function resumeScanning() {
+  try {
+    await api("/api/emergency-stop/clear", { method: "POST" });
+    S.settings.emergency_stop = false;
+    renderBanner();
+    toast("Scanning resumed. Automation stays off until you turn it back on.");
+  } catch (e) { toast("Could not resume: " + errText(e)); }
+}
+$("#stopBtn").onclick = emergencyStop;
+$("#resumeBtn").onclick = resumeScanning;
 $("#newScanBtn").onclick = () => openScanDialog();
 
 // ---- render dispatcher --------------------------------------
@@ -118,7 +204,12 @@ async function render(soft = false) {
     if (S.view === "checklist") return renderChecklist(v);
     if (S.view === "reports") return renderReports(v);
     if (S.view === "scope") return renderScope(v);
-  } catch (e) { v.innerHTML = `<div class="empty">error: ${esc(e.message)}</div>`; }
+    if (S.view === "tools") return renderTools(v);
+    if (S.view === "audit") return renderAudit(v);
+  } catch (e) {
+    v.innerHTML = `<div class="empty"><strong>This view could not load</strong>${esc(errText(e))}
+      <div><button class="btn sm ghost" onclick="render()">Try again</button></div></div>`;
+  }
 }
 
 // ---- OVERVIEW -----------------------------------------------
@@ -132,11 +223,12 @@ async function renderOverview(v) {
   const c = s.counts;
   v.innerHTML = `
     <div class="huntbar">
+      <p class="hb-title">Start a hunt</p>
       <div class="hb-row">
         <span class="hb-ico">🎯</span>
         <input id="huntInput" autocomplete="off" spellcheck="false"
                placeholder="Enter a domain or URL and press Enter to hunt —  e.g. example.com">
-        <button class="btn hb-go" onclick="quickHunt()">Hunt ▸</button>
+        <button class="btn hb-go" onclick="quickHunt()">Start hunt</button>
       </div>
       <div class="hb-foot">
         <label class="chkline"><input type="checkbox" id="huntAuth">
@@ -210,7 +302,7 @@ window.quickHunt = async () => {
     if (msg.toLowerCase().includes("out of scope"))
       msg = "Out of scope — tick the authorization box below, then press Hunt.";
     if (err) err.textContent = msg;
-    if (go) { go.disabled = false; go.textContent = "Hunt ▸"; }
+    if (go) { go.disabled = false; go.textContent = "Start hunt"; }
   }
 };
 
@@ -235,7 +327,7 @@ async function renderAssets(v) {
           <button class="btn sm" onclick="runScan('${a.id}')">Scan</button>
           <button class="btn sm ghost" onclick="viewAsset('${a.id}')">Open</button>
         </td></tr>`).join("")}
-      </tbody></table>` : `<div class="empty">No assets. Add your first target.</div>`}
+      </tbody></table>` : `<div class="empty"><strong>No assets yet</strong>Add a target to start assessing it.<div><button class="btn sm" onclick="openScanDialog()">New scan</button></div></div>`}
   </div>`;
 }
 function sevDots(c) {
@@ -250,7 +342,7 @@ async function renderFindings(v) {
       <select id="fSev"><option value="">All severities</option>
         ${["critical", "high", "medium", "low", "info"].map(s => `<option>${s}</option>`).join("")}</select>
       <select id="fStatus"><option value="">All statuses</option>
-        ${["new", "confirmed", "false_positive", "accepted_risk", "fixed", "reopened"].map(s => `<option>${s}</option>`).join("")}</select>
+        ${["new", "confirmed", "false_positive", "accepted_risk", "fixed", "reopened"].map(s => `<option value="${s}">${STATUS_LABELS[s]}</option>`).join("")}</select>
       <select id="fOwasp"><option value="">All OWASP</option>
         ${Object.keys(OWASP_NAMES).map(c => `<option value="${c}">${c} ${OWASP_NAMES[c]}</option>`).join("")}</select>
     </div>
@@ -267,44 +359,102 @@ async function renderFindings(v) {
   load();
 }
 function findingsTable(fs, compact) {
-  if (!fs || !fs.length) return `<div class="empty">No findings.</div>`;
+  if (!fs || !fs.length) return `<div class="empty"><strong>No findings match these filters</strong>Clear a filter, or run a scan to look for issues.</div>`;
   return `<table><thead><tr><th>Sev</th><th>Title</th>${compact ? "" : "<th>OWASP</th><th>Location</th><th>Status</th>"}</tr></thead><tbody>
     ${fs.map(f => `<tr class="clickable" onclick="viewFinding('${f.id}')">
       <td><span class="pill p-${f.severity}">${f.severity}</span></td>
       <td>${esc(f.title)}${compact ? `<div class="mono muted" style="font-size:11px">${esc(f.location || f.host || "")}</div>` : ""}</td>
       ${compact ? "" : `<td class="mono muted">${f.owasp || "—"}</td>
       <td class="mono muted" style="font-size:11px">${esc(f.location || f.host || "—")}</td>
-      <td><span class="tag">${f.status}</span></td>`}
+      <td><span class="tag">${esc(STATUS_LABELS[f.status] || f.status)}</span></td>`}
     </tr>`).join("")}</tbody></table>`;
 }
 
 // ---- LIVE ---------------------------------------------------
-function renderLive(v) {
+async function renderLive(v) {
   v.innerHTML = `
-    <div class="panel" id="scanHead" style="margin-bottom:14px"></div>
+    <div class="panel" id="scanHead" style="margin-bottom:16px"></div>
     <div class="row cols-2b">
-      <div class="panel"><h2>Scan console</h2><div class="console" id="console"></div></div>
-      <div class="panel"><h2>Live finding feed</h2><div class="feed" id="feed"></div></div>
+      <div class="panel">
+        <div class="panel-head"><h2>Console</h2><span class="faint" style="font-size:12px">Newest at the bottom</span></div>
+        <div class="console" id="console" role="log"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Findings as they land</h2></div>
+        <div class="feed" id="feed"></div>
+      </div>
     </div>`;
+  if (!S.liveScan) await loadActiveScan();
   updateScanHeader();
   const con = $("#console"); con.innerHTML = "";
   S.logBuf.slice(-200).forEach(appendLog);
   const feed = $("#feed");
-  feed.innerHTML = S.feedBuf.length ? "" : `<div class="empty">Findings stream here during a scan.</div>`;
+  feed.innerHTML = S.feedBuf.length ? "" : `<div class="empty"><strong>No findings yet</strong>Results appear here while a scan runs.</div>`;
   S.feedBuf.forEach(f => feed.insertAdjacentHTML("beforeend", feedItem(f)));
 }
 function updateScanHeader() {
   const h = $("#scanHead"); if (!h) return;
   const s = S.liveScan;
-  if (!s) { h.innerHTML = `<div class="empty" style="padding:14px">No active scan. Start one from Assets or “New Scan”.</div>`; return; }
-  const pct = s.progress || 0;
+  if (!s) {
+    h.innerHTML = `<div class="empty"><strong>No scan is running</strong>Start a hunt from Overview, or press “New scan”.</div>`;
+    return;
+  }
+  const status = s.status || "queued";
+  const active = status === "running" || status === "queued";
+  const pct = Math.max(0, Math.min(100, Number(s.progress) || 0));
+  const step = active ? humanStage(s.stage) : (STATUS_LABELS[status] || status);
+  const id = esc(s.scan_id || "");
   h.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-      <div><strong>${(s.stage || s.status || "running").toUpperCase()}</strong>
-        <span class="muted mono" style="font-size:11px">· ${esc(s.scan_id || "")}</span></div>
-      <div class="muted">${pct}%</div></div>
-    <div class="bar"><i style="width:${pct}%"></i></div>`;
+    <div class="scan-head">
+      <div>
+        <div class="inline">
+          <span class="status ${esc(status)}">${esc(STATUS_LABELS[status] || status)}</span>
+          <strong style="font-size:15px">${esc(PROFILE_LABELS[s.profile] || s.profile || "Scan")}</strong>
+        </div>
+        <div class="meta">
+          <span>Current step <b>${esc(step)}</b></span>
+          <span>Progress <b>${pct}%</b></span>
+          <span>Started <b>${s.created_at ? timeAgo(s.created_at) : "just now"}</b></span>
+          <span class="mono faint">${id}</span>
+        </div>
+      </div>
+      <div class="inline">
+        ${active && id ? `<button class="btn danger-ghost sm" onclick="cancelScan('${id}')">Cancel scan</button>` : ""}
+        ${!active && id && (status === "failed" || status === "cancelled") ? `<button class="btn ghost sm" onclick="retryScan('${id}')">Retry scan</button>` : ""}
+      </div>
+    </div>
+    <div class="bar" style="margin-top:14px" role="progressbar" aria-label="Scan progress"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`;
 }
+// Load the newest scan from the server, so the live view works after a page reload.
+async function loadActiveScan() {
+  try {
+    const rows = await api("/api/scans");
+    const live = rows.find(r => r.status === "running" || r.status === "queued");
+    setActive(!!live);
+    const s = live || rows[0];
+    if (s) S.liveScan = { scan_id: s.id, asset_id: s.asset_id, profile: s.profile, status: s.status,
+      stage: s.stage, progress: s.progress, created_at: s.created_at };
+  } catch {}
+}
+window.cancelScan = async (sid) => {
+  if (!confirm("Cancel this scan?\n\nA running scan stops at its next stage. Findings already saved are kept.")) return;
+  try {
+    await api(`/api/scans/${sid}/cancel`, { method: "POST" });
+  } catch (e) { toast("Could not cancel: " + errText(e)); return; }
+  await loadActiveScan();
+  if (S.view === "live") updateScanHeader();
+  softRefresh();
+};
+window.retryScan = async (sid) => {
+  try {
+    await api(`/api/scans/${sid}/retry`, { method: "POST" });
+    toast("Scan queued again.");
+  } catch (e) { toast("Could not retry: " + errText(e)); return; }
+  await loadActiveScan();
+  if (S.view === "live") updateScanHeader();
+  softRefresh();
+};
 function appendLog(ev) {
   const con = $("#console"); if (!con) return;
   const t = new Date().toLocaleTimeString();
@@ -399,7 +549,7 @@ async function renderScope(v) {
 
   v.innerHTML = `<div class="row cols-2b">
     <div class="panel">
-      <h2>Scope — authorized targets</h2>
+      <h2>Authorized targets</h2>
       <p class="muted" style="font-size:12px;margin-top:-6px">Scans only run against hosts matching an allow rule. A root domain authorizes all of its subdomains.</p>
 
       <label>Add a target to scope</label>
@@ -413,19 +563,27 @@ async function renderScope(v) {
       <span id="scAddErr" class="sev-crit" style="font-size:11px;margin-left:8px"></span>
 
       <h2 style="margin-top:20px">Allowlist (${allowRules.length})</h2>
-      <div class="rulelist">${allowRules.map(ruleRow).join("") || "<div class='muted'>none</div>"}</div>
+      <div class="rulelist">${allowRules.map(ruleRow).join("") || `<div class="empty">No allow rules yet. Add a target above.</div>`}</div>
       <h2 style="margin-top:16px">Denylist (${denyRules.length})</h2>
-      <div class="rulelist">${denyRules.map(ruleRow).join("") || "<div class='muted'>none</div>"}</div>
+      <div class="rulelist">${denyRules.map(ruleRow).join("") || `<div class="empty">Nothing is excluded.</div>`}</div>
     </div>
 
     <div>
-      <div class="panel" style="margin-bottom:14px">
-        <h2>Automation</h2>
-        <label class="chkline"><input type="checkbox" id="setAuto" ${set.automation_enabled ? "checked" : ""} onchange="toggleSetting('automation_enabled',this.checked)">
-          <span>Continuous assessment — daily full scan + ${set.change_watch_minutes}-min change-watch</span></label>
-        <label class="chkline" style="margin-top:10px"><input type="checkbox" id="setEnforce" ${set.scope_enforce ? "checked" : ""} onchange="toggleSetting('scope_enforce',this.checked)">
-          <span>Enforce scope (strongly recommended)</span></label>
-        <p class="muted" style="font-size:11px;margin-top:10px">Daily full scan runs around ${String(set.full_scan_cron_hour).padStart(2,'0')}:00. Changes apply live — no restart needed.</p>
+      <div class="panel" style="margin-bottom:16px">
+        <h2>Safety controls</h2>
+        ${switchRow("scope_enforce", "Enforce scope", "Scans only reach targets on your allowlist. Keep this on.", set.scope_enforce)}
+        ${switchRow("allow_private", "Allow private and local targets", "Lets scans reach localhost, your LAN and other internal addresses. Only for machines you own.", set.allow_private)}
+        ${switchRow("automation_enabled", "Continuous assessment", `A full scan around ${String(set.full_scan_cron_hour).padStart(2, "0")}:00 each day, plus a change watch every ${set.change_watch_minutes} minutes.`, set.automation_enabled)}
+        ${switchRow("allow_intrusive", "Intrusive checks", "Enables low-impact SQL injection testing with sqlmap. Requires written authorization for every target.", set.allow_intrusive)}
+      </div>
+      <div class="panel danger-zone">
+        <h2>Emergency stop</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 14px">${set.emergency_stop
+          ? "Emergency stop is on. No scans start, and automation stays off until you resume."
+          : "Cancels every queued and running scan and turns automation off straight away."}</p>
+        ${set.emergency_stop
+          ? `<button class="btn ghost" onclick="resumeScanning()">Resume scanning</button>`
+          : `<button class="btn danger" onclick="emergencyStop()">Stop all scans</button>`}
       </div>
       <div class="panel"><h2>Scope checker</h2>
         <p class="muted" style="font-size:12px">Would a target be allowed?</p>
@@ -449,9 +607,35 @@ window.addScope = async () => {
 window.delScope = async (id) => {
   await api(`/api/scope/${id}`, { method: "DELETE" }); toast("Rule removed"); renderScope($("#views"));
 };
-window.toggleSetting = async (key, val) => {
-  await api("/api/settings", { method: "POST", body: JSON.stringify({ [key]: val }) });
-  toast(val ? "Enabled" : "Disabled");
+// One labelled on/off row. The input is the whole switch, so it is keyboard and screen-reader friendly.
+function switchRow(key, title, desc, on) {
+  const id = `sw_${key}`;
+  return `<div class="setting">
+    <div class="txt"><strong id="${id}_t">${title}</strong><span>${desc}</span></div>
+    <span class="switch"><input type="checkbox" id="${id}" aria-labelledby="${id}_t" ${on ? "checked" : ""}
+      onchange="toggleSetting('${key}', this.checked, this)"><span class="track" aria-hidden="true"></span></span>
+  </div>`;
+}
+// Risky switches ask first. Intrusive checks also send intrusive_ack, which the server requires.
+window.toggleSetting = async (key, val, el) => {
+  const body = { [key]: val };
+  const revert = () => { if (el) el.checked = !val; };
+  if (key === "scope_enforce" && !val &&
+      !confirm("Turn off scope enforcement?\n\nScans could then reach hosts that are not on your allowlist. Only do this while you set things up.")) return revert();
+  if (key === "allow_private" && val &&
+      !confirm("Allow private and local targets?\n\nScans can then reach localhost, your LAN and internal addresses. Only do this for machines you own.")) return revert();
+  if (key === "allow_intrusive" && val) {
+    if (!confirm("Enable intrusive checks?\n\nSQL injection testing sends crafted requests that can change or slow a target. Only enable this if you hold written authorization for every target in scope.")) return revert();
+    body.intrusive_ack = true;
+  }
+  try {
+    S.settings = await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
+    renderBanner();
+    toast(val ? "Turned on." : "Turned off.");
+  } catch (e) {
+    revert();
+    toast("Not saved: " + errText(e));
+  }
 };
 window.checkScope = async () => {
   const r = await api("/api/scope/check", { method: "POST", body: JSON.stringify({ pattern: $("#scTest").value }) });
@@ -463,11 +647,17 @@ window.checkScope = async () => {
 
 // ---- drawers ------------------------------------------------
 function openDrawer(html) {
-  $("#drawer").innerHTML = `<span class="x" onclick="closeDrawer()">✕</span>${html}`;
+  $("#drawer").innerHTML = `<button class="x" aria-label="Close panel" onclick="closeDrawer()">✕</button>${html}`;
+  $("#drawer").setAttribute("aria-hidden", "false");
   $("#drawer").classList.add("open"); $("#overlay").classList.add("on");
 }
-window.closeDrawer = () => { $("#drawer").classList.remove("open"); $("#overlay").classList.remove("on"); };
+window.closeDrawer = () => {
+  $("#drawer").classList.remove("open");
+  $("#drawer").setAttribute("aria-hidden", "true");
+  $("#overlay").classList.remove("on");
+};
 $("#overlay").onclick = closeDrawer;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
 window.viewFinding = async (fid) => {
   const f = await api(`/api/findings/${fid}`);
@@ -489,7 +679,7 @@ window.viewFinding = async (fid) => {
     ${refs.length ? `<label>References</label><div class="block">${refs.map(r => `<div><a href="${esc(r)}" target="_blank">${esc(r)}</a></div>`).join("")}</div>` : ""}
     <label>Status</label>
     <div class="statusbtns">${statuses.map(s =>
-      `<button class="btn sm ${s === f.status ? "" : "ghost"}" onclick="setFindingStatus('${f.id}','${s}')">${s}</button>`).join("")}</div>
+      `<button class="btn sm ${s === f.status ? "" : "ghost"}" aria-pressed="${s === f.status}" onclick="setFindingStatus('${f.id}','${s}')">${STATUS_LABELS[s]}</button>`).join("")}</div>
   `);
 };
 window.setFindingStatus = async (fid, st) => {
@@ -525,31 +715,52 @@ window.delAsset = async (aid) => {
 // ---- scan dialog --------------------------------------------
 function openScanDialog() {
   openDrawer(`
-    <h2>New scan &amp; hunt</h2>
-    <label>Target — URL, host, or root domain</label>
-    <input id="nsTarget" placeholder="example.com   (root domain = full subdomain hunt)" style="width:100%;margin:6px 0 12px">
-    <label>Name (optional)</label>
-    <input id="nsName" placeholder="My app" style="width:100%;margin:6px 0 12px">
-    <div class="cols-2" style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-      <div><label>Kind</label>
-        <select id="nsKind" style="width:100%;margin:6px 0 12px">
-          <option value="program">bug-bounty program (domain)</option>
-          <option value="web">web app</option><option value="host">single host</option></select></div>
-      <div><label>Profile</label>
-        <select id="nsProfile" style="width:100%;margin:6px 0 12px">
-          <option value="owasp-full">owasp-full — hunt + web + network</option>
-          <option value="web">web — http + nuclei</option>
-          <option value="recon">recon — subdomains only</option>
-          <option value="network">network — nmap</option>
-          <option value="quick">quick</option><option value="passive">passive — subdomains + takeover</option><option value="api">api — API security</option><option value="wordpress">wordpress — WP assessment</option><option value="infra">infra — domain & infrastructure</option><option value="code">code — secrets + SAST (local path)</option><option value="dependency">dependency — trivy (local path)</option><option value="full">full — everything authorized</option></select></div>
+    <p class="muted" style="font-size:12px;margin:0 0 2px">New assessment</p>
+    <h2 style="font-size:18px">Start a scan</h2>
+    <div class="field">
+      <label for="nsTarget">Target</label>
+      <input id="nsTarget" autocomplete="off" spellcheck="false" placeholder="example.com, https://app.example.com or 203.0.113.10">
+      <span class="hint">A root domain also covers all of its subdomains.</span>
+    </div>
+    <div class="field">
+      <label for="nsName">Name <span class="faint" style="font-weight:400">(optional)</span></label>
+      <input id="nsName" placeholder="e.g. Partner portal">
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label for="nsKind">Target type</label>
+        <select id="nsKind">
+          <option value="program">Bug-bounty program (domain)</option>
+          <option value="web">Web application</option>
+          <option value="host">Single host</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="nsProfile">Scan profile</label>
+        <select id="nsProfile">
+          <option value="owasp-full">Full hunt (OWASP + network)</option>
+          <option value="web">Web application</option>
+          <option value="recon">Recon only (subdomains)</option>
+          <option value="network">Network (nmap)</option>
+          <option value="quick">Quick scan</option>
+          <option value="passive">Passive (subdomains + takeover)</option>
+          <option value="api">API security</option>
+          <option value="wordpress">WordPress</option>
+          <option value="infra">Infrastructure</option>
+          <option value="code">Source code (local path)</option>
+          <option value="dependency">Dependencies (local path)</option>
+          <option value="full">Everything authorized</option>
+        </select>
+      </div>
     </div>
     <div class="authbox">
       <label class="chkline"><input type="checkbox" id="nsAuth">
-        <span>I own this target or I'm <b>authorized</b> to test it (e.g. a bug-bounty scope). It will be added to scope.</span></label>
+        <span>I own this target or I'm <b>authorized</b> to test it. It will be added to scope.</span></label>
     </div>
-    <button class="btn" style="width:100%;text-align:center;margin-top:14px" onclick="submitScan()">Add to scope &amp; start hunt</button>
-    <p id="nsErr" class="sev-crit" style="font-size:12px"></p>
-    <p class="muted" style="font-size:11px;margin-top:10px">A root domain runs the full pipeline: subdomain discovery → live-host probe → OWASP Top 10 + CVE scan on every in-scope host. Only authorized targets are ever scanned.</p>`);
+    <button class="btn" style="width:100%;margin-top:16px" onclick="submitScan()">Add to scope and start</button>
+    <p id="nsErr" class="err" role="alert" style="margin-top:10px"></p>
+    <p class="muted" style="font-size:12px;margin-top:14px">A root domain runs the full pipeline: subdomain discovery, live-host probe, then OWASP Top 10 and CVE checks on every in-scope host. Argus only scans targets that are in scope.</p>`);
+  setTimeout(() => { const t = $("#nsTarget"); if (t) t.focus(); }, 240);
 }
 window.submitScan = async () => {
   const target = $("#nsTarget").value.trim();
@@ -580,14 +791,74 @@ window.runScan = async (aid) => {
 };
 
 function scansTable(ss) {
-  if (!ss || !ss.length) return `<div class="empty">No scans yet.</div>`;
-  return `<table><tbody>${ss.map(s => {
+  if (!ss || !ss.length) return `<div class="empty"><strong>No scans yet</strong>Scans you start will be listed here.</div>`;
+  return `<div class="table-wrap"><table><tbody>${ss.map(s => {
     let stats = {}; try { stats = JSON.parse(s.stats || "{}"); } catch {}
-    return `<tr><td><span class="tag">${s.profile}</span></td>
-      <td>${s.status === "done" ? "✓" : s.status === "failed" ? "✗" : "⟲"} ${s.status}</td>
-      <td class="muted">${stats.total != null ? stats.total + " found" : ""}</td>
-      <td class="muted right" style="font-size:12px">${timeAgo(s.created_at)}</td></tr>`;
-  }).join("")}</tbody></table>`;
+    const active = s.status === "running" || s.status === "queued";
+    const retryable = s.status === "failed" || s.status === "cancelled";
+    return `<tr>
+      <td>${esc(PROFILE_LABELS[s.profile] || s.profile)}</td>
+      <td><span class="status ${esc(s.status)}">${esc(STATUS_LABELS[s.status] || s.status)}</span></td>
+      <td class="muted nowrap">${stats.total != null ? stats.total + " findings" : "—"}</td>
+      <td class="muted nowrap" style="font-size:12px">${timeAgo(s.created_at)}</td>
+      <td class="right nowrap">
+        ${active ? `<button class="btn sm danger-ghost" onclick="cancelScan('${esc(s.id)}')">Cancel</button>` : ""}
+        ${retryable ? `<button class="btn sm ghost" onclick="retryScan('${esc(s.id)}')">Retry</button>` : ""}
+      </td></tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+
+// ---- TOOLS --------------------------------------------------
+async function renderTools(v) {
+  const tools = await api("/api/tools");
+  const installed = tools.filter(t => t.installed).length;
+  const groups = {};
+  tools.forEach(t => (groups[t.category || "Other"] ||= []).push(t));
+  v.innerHTML = `<div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Tool status</h2>
+        <p class="panel-sub" style="margin:0">${installed} of ${tools.length} installed. A missing tool is skipped during a scan, and the console says so.</p>
+      </div>
+      <span class="faint" style="font-size:12px">Install or update with <code>./update.sh</code></span>
+    </div>
+    ${Object.keys(groups).map(cat => `
+      <h3 style="font-size:12px;color:var(--text-2);margin:20px 0 10px;font-weight:650">${esc(cat)}</h3>
+      <div class="tool-grid">${groups[cat].map(t => `
+        <div class="tool">
+          <div class="head">
+            <span class="name">${esc(t.binary)}</span>
+            <span class="status ${t.installed ? "done" : "cancelled"}">${t.installed ? "Installed" : "Missing"}</span>
+          </div>
+          ${t.installed
+            ? `<div class="ver">${esc(t.version || "installed")}</div>`
+            : `<div class="hint">${esc(t.install_hint || "Run ./update.sh to install.")}</div>`}
+        </div>`).join("")}
+      </div>`).join("")}
+  </div>`;
+}
+
+// ---- AUDIT --------------------------------------------------
+async function renderAudit(v) {
+  const rows = await api("/api/audit?limit=300");
+  v.innerHTML = `<div class="panel">
+    <div class="panel-head">
+      <div>
+        <h2>Audit log</h2>
+        <p class="panel-sub" style="margin:0">Newest first. Records scans, scope and settings changes, and emergency stops, with the caller's IP.</p>
+      </div>
+    </div>
+    ${rows.length ? `<div class="table-wrap"><table>
+      <thead><tr><th>When (UTC)</th><th>Action</th><th>Target</th><th>Detail</th><th>From</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td class="nowrap muted" style="font-size:12px">${esc(String(r.ts || "").replace("T", " ").slice(0, 19))}</td>
+        <td><span class="tag">${esc(r.action)}</span></td>
+        <td class="mono" style="font-size:12px;overflow-wrap:anywhere">${esc(r.target || "—")}</td>
+        <td class="muted" style="font-size:12px">${esc(r.detail || "")}</td>
+        <td class="mono faint nowrap" style="font-size:11px">${esc(r.ip || "")}</td>
+      </tr>`).join("")}</tbody></table></div>`
+      : `<div class="empty"><strong>Nothing recorded yet</strong>Actions you take in Argus, such as starting scans or changing scope, appear here.</div>`}
+  </div>`;
 }
 
 // ---- utils --------------------------------------------------
