@@ -522,23 +522,23 @@ def tools_status(_=Depends(require_key)):  # noqa: B008
     return tools.detect()
 
 
-@app.post("/api/tools/{key}/install")
-def tool_install(key: str, request: Request, _=Depends(require_key)):  # noqa: B008
+@app.post("/api/tools/{tool_key}/install")
+def tool_install(tool_key: str, request: Request, _=Depends(require_key)):  # noqa: B008
     try:
-        job = jobs.start_install(key, _client_ip(request))
+        job = jobs.start_install(tool_key, _client_ip(request))
     except jobs.UnknownTool:
-        raise HTTPException(404, f"unknown tool: {key}")
+        raise HTTPException(404, f"unknown tool: {tool_key}")
     except jobs.AlreadyRunning as exc:
         raise HTTPException(409, f"a tool job is already running ({exc}). Wait for it to finish.")
     return jobs.public_view(job)
 
 
-@app.post("/api/tools/{key}/uninstall")
-def tool_uninstall(key: str, request: Request, _=Depends(require_key)):  # noqa: B008
+@app.post("/api/tools/{tool_key}/uninstall")
+def tool_uninstall(tool_key: str, request: Request, _=Depends(require_key)):  # noqa: B008
     try:
-        job = jobs.start_uninstall(key, _client_ip(request))
+        job = jobs.start_uninstall(tool_key, _client_ip(request))
     except jobs.UnknownTool:
-        raise HTTPException(404, f"unknown tool: {key}")
+        raise HTTPException(404, f"unknown tool: {tool_key}")
     except jobs.AlreadyRunning as exc:
         raise HTTPException(409, f"a tool job is already running ({exc}). Wait for it to finish.")
     return jobs.public_view(job)

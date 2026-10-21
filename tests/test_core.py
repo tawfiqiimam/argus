@@ -644,6 +644,51 @@ class ToolJobsTests(unittest.TestCase):
         self.assertEqual(view["tool"], "nuclei")
 
 
+class RoutePathParamNameTests(unittest.TestCase):
+    """A route's {path_param} can never be named 'key' or 'x_api_key'.
+
+    Regression: @app.post("/api/tools/{key}/install") with
+    def tool_install(key: str, ..., _=Depends(require_key)) crashed FastAPI at
+    import time with "Cannot use Query for path param 'key'" — require_key's
+    own `key: str | None = Query(...)` (the API key passed as ?key=...) and the
+    route's path param share the name "key", and FastAPI merges dependency
+    parameters with route parameters by name, so it tried to treat one path
+    param as both Path and Query. Caught by a user running the real app,
+    since fastapi isn't importable in this sandbox to catch it directly.
+    """
+
+    def test_no_route_path_param_collides_with_require_key(self):
+        import ast
+        import re
+
+        main_src = (pathlib.Path(__file__).resolve().parent.parent / "t4wf1q" / "main.py").read_text()
+        tree = ast.parse(main_src)
+        banned = {"key", "x_api_key"}
+        checked = 0
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            route_paths = []
+            for dec in node.decorator_list:
+                if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr in ("get", "post", "put", "delete", "patch")
+                        and dec.args and isinstance(dec.args[0], ast.Constant)):
+                    route_paths.append(dec.args[0].value)
+            if not route_paths:
+                continue
+            uses_require_key = "require_key" in ast.dump(node)
+            if not uses_require_key:
+                continue
+            checked += 1
+            path_params = {m for p in route_paths for m in re.findall(r"\{(\w+)\}", p)}
+            collision = path_params & banned
+            self.assertFalse(
+                collision,
+                f"{node.name}: path param(s) {collision} collide with require_key's own "
+                f"'key'/'x_api_key' params — rename the route's path param")
+        self.assertGreater(checked, 0, "no require_key-protected route found — test is not exercising anything")
+
+
 class ToolsScriptConsistencyTests(unittest.TestCase):
     """Every key in tools.TOOLS has a matching install/uninstall case in the shell script."""
 
