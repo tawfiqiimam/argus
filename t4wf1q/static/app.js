@@ -693,42 +693,66 @@ window.setFindingStatus = async (fid, st) => {
 
 window.viewAsset = async (aid) => {
   const a = await api(`/api/assets/${aid}`);
+  S.currentAsset = a;    // read by runOneToolOnCurrent(), so names/targets never go through onclick text
   openDrawer(`
     <h2 style="margin:0 0 4px">${esc(a.name)}</h2>
     <div class="mono muted">${esc(a.target)}</div>
     <div class="kv2"><div class="k">Risk</div><div style="font-weight:800">${a.risk}/100</div>
       <div class="k">Kind</div><div>${esc(a.kind)}</div>
       <div class="k">Findings</div><div>${sevDots(a.counts)}</div></div>
-    <div style="display:flex;gap:8px;margin:10px 0 18px">
+    <div style="display:flex;gap:8px;margin:10px 0 18px;flex-wrap:wrap">
       <button class="btn sm" onclick="runScan('${a.id}')">Run scan</button>
+      <button class="btn sm ghost" onclick="runOneToolOnCurrent()">Run one tool…</button>
       <button class="btn sm ghost" onclick="api('/api/assets/${a.id}/report',{method:'POST'}).then(()=>toast('Report ✓'))">Report</button>
       <button class="btn sm ghost" onclick="delAsset('${a.id}')">Delete</button>
     </div>
+    <label>Evidence</label>
+    <div class="block" id="assetEvidence" style="max-height:160px;overflow:auto">Loading…</div>
     <label>Attack surface (${a.subdomains.length})</label>
     <div class="block" style="max-height:200px;overflow:auto">
       ${a.subdomains.length ? a.subdomains.map(s => `<div class="mono" style="font-size:12px;padding:2px 0">
         ${s.alive ? "🟢" : "⚪"} ${esc(s.host)} <span class="muted">${s.status_code || ""} ${esc(s.title || "")}</span></div>`).join("")
         : "<span class='muted'>Run a recon scan to map subdomains.</span>"}
     </div>`);
+  loadAssetEvidence(aid);
 };
+window.runOneToolOnCurrent = () => {
+  const a = S.currentAsset;
+  if (a) openScanDialog({ target: a.target, name: a.name });
+};
+async function loadAssetEvidence(aid) {
+  const box = $("#assetEvidence");
+  if (!box) return;
+  try {
+    const shots = await api(`/api/assets/${aid}/evidence`);
+    if (!shots.length) { box.innerHTML = `<span class="muted">No screenshots yet. Run a scan with the "evidence" stage (included in Web, OWASP-full).</span>`; return; }
+    box.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">${shots.slice(0, 24).map(s => {
+      const url = `/api/assets/${aid}/evidence/${encodeURIComponent(s.scan_id)}/${encodeURIComponent(s.file)}?key=${encodeURIComponent(S.key)}`;
+      return `<a href="${url}" target="_blank" title="${esc(s.file)}">
+        <img src="${url}" loading="lazy" style="width:96px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--border)"></a>`;
+    }).join("")}</div>`;
+  } catch { box.innerHTML = `<span class="muted">Could not load screenshots.</span>`; }
+}
 window.delAsset = async (aid) => {
   if (!confirm("Delete this asset and all its findings?")) return;
   await api(`/api/assets/${aid}`, { method: "DELETE" }); closeDrawer(); toast("Deleted"); render();
 };
 
 // ---- scan dialog --------------------------------------------
-function openScanDialog() {
+function openScanDialog(prefill) {
+  prefill = prefill || {};
   openDrawer(`
     <p class="muted" style="font-size:12px;margin:0 0 2px">New assessment</p>
     <h2 style="font-size:18px">Start a scan</h2>
     <div class="field">
       <label for="nsTarget">Target</label>
-      <input id="nsTarget" autocomplete="off" spellcheck="false" placeholder="example.com, https://app.example.com or 203.0.113.10">
+      <input id="nsTarget" autocomplete="off" spellcheck="false" value="${esc(prefill.target || "")}"
+             placeholder="example.com, https://app.example.com or 203.0.113.10">
       <span class="hint">A root domain also covers all of its subdomains.</span>
     </div>
     <div class="field">
       <label for="nsName">Name <span class="faint" style="font-weight:400">(optional)</span></label>
-      <input id="nsName" placeholder="e.g. Partner portal">
+      <input id="nsName" value="${esc(prefill.name || "")}" placeholder="e.g. Partner portal">
     </div>
     <div class="form-grid">
       <div class="field">
@@ -755,6 +779,7 @@ function openScanDialog() {
           <option value="dependency">Dependencies (local path)</option>
           <option value="full">Everything authorized</option>
         </select>
+        <span class="hint">Pick one tool below to run it on its own instead.</span>
       </div>
     </div>
     <div class="authbox">
@@ -765,6 +790,27 @@ function openScanDialog() {
     <p id="nsErr" class="err" role="alert" style="margin-top:10px"></p>
     <p class="muted" style="font-size:12px;margin-top:14px">A root domain runs the full pipeline: subdomain discovery, live-host probe, then OWASP Top 10 and CVE checks on every in-scope host. Argus only scans targets that are in scope.</p>`);
   setTimeout(() => { const t = $("#nsTarget"); if (t) t.focus(); }, 240);
+  loadSingleToolOptions();
+}
+// Single-tool options come from the server (/api/profiles) so this list can never drift
+// out of sync with the tools the pipeline actually knows how to run alone.
+async function loadSingleToolOptions() {
+  const sel = $("#nsProfile");
+  if (!sel) return;
+  try {
+    const profiles = await api("/api/profiles");
+    const tools = profiles.filter(p => p.single_tool).sort((a, b) => a.single_tool.localeCompare(b.single_tool));
+    if (!tools.length) return;
+    const group = document.createElement("optgroup");
+    group.label = "Single tool";
+    tools.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.key;
+      opt.textContent = p.single_tool;
+      group.appendChild(opt);
+    });
+    sel.appendChild(group);
+  } catch { /* static profiles above still work without this */ }
 }
 window.submitScan = async () => {
   const target = $("#nsTarget").value.trim();

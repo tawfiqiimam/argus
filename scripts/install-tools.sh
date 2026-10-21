@@ -154,6 +154,12 @@ ensure amass amass - "sudo apt install -y amass"
 ensure katana - github.com/projectdiscovery/katana/cmd/katana@latest \
   "go install github.com/projectdiscovery/katana/cmd/katana@latest"
 ensure gau - github.com/lc/gau/v2/cmd/gau@latest "go install github.com/lc/gau/v2/cmd/gau@latest"
+ensure jsluice - github.com/BishopFox/jsluice/cmd/jsluice@latest \
+  "go install github.com/BishopFox/jsluice/cmd/jsluice@latest"
+ensure gowitness - github.com/sensepost/gowitness@latest \
+  "go install github.com/sensepost/gowitness@latest"
+if ! have arjun; then try "arjun" venv_tool arjun arjun; fi
+if have arjun; then ok "arjun"; else bad "arjun" "re-run ./update.sh, or: pipx install arjun"; fi
 
 echo "· vulnerability assessment"
 ensure nuclei nuclei github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest \

@@ -361,5 +361,165 @@ class ResearchAndChecklistTests(unittest.TestCase):
             self.assertTrue(i["owasp"].startswith("A"))
 
 
+class ArjunParsingTests(unittest.TestCase):
+    """arjun's JSON report shape varies by version; the parser must handle both."""
+
+    def test_dict_of_list_shape(self):
+        from t4wf1q.scanners import recon_extra
+        data = {"https://a.test/s": ["debug", "token"]}
+        self.assertEqual(recon_extra._parse_arjun_json(data), {"https://a.test/s": ["debug", "token"]})
+
+    def test_dict_of_dict_with_param_objects(self):
+        from t4wf1q.scanners import recon_extra
+        data = {"https://a.test/s": {"params": [{"name": "debug"}, {"name": "token"}]}}
+        self.assertEqual(recon_extra._parse_arjun_json(data)["https://a.test/s"], ["debug", "token"])
+
+    def test_list_of_entries_shape(self):
+        from t4wf1q.scanners import recon_extra
+        data = [{"url": "https://a.test/s", "params": ["debug"]}]
+        self.assertEqual(recon_extra._parse_arjun_json(data), {"https://a.test/s": ["debug"]})
+
+    def test_garbage_shape_returns_empty(self):
+        from t4wf1q.scanners import recon_extra
+        self.assertEqual(recon_extra._parse_arjun_json("not json structure"), {})
+        self.assertEqual(recon_extra._parse_arjun_json(None), {})
+
+    def test_findings_are_info_level_and_never_store_real_values(self):
+        from t4wf1q.scanners import recon_extra
+        out = recon_extra.arjun_findings({"https://a.test/s?id=1": ["debug"]})
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0].severity, "info")
+        self.assertEqual(out[0].source, "arjun")
+        self.assertIn("'debug'", out[0].title)
+
+
+class JsluiceParsingTests(unittest.TestCase):
+    def test_parses_jsonl_and_ignores_bad_lines(self):
+        from t4wf1q.scanners import recon_extra
+        out = recon_extra._parse_jsluice_urls(
+            '{"url": "/api/v1/users"}\nnot json\n{"url": "https://cdn.a.test/x"}\n{"nope": 1}\n')
+        self.assertEqual(out, ["/api/v1/users", "https://cdn.a.test/x"])
+
+    def test_resolve_relative_and_absolute_and_protocol_relative(self):
+        from t4wf1q.scanners import recon_extra
+        js = "https://a.test/static/app.js"
+        self.assertEqual(recon_extra._resolve_js_url("https://b.test/x", js), "https://b.test/x")
+        self.assertEqual(recon_extra._resolve_js_url("/api/v1/users", js), "https://a.test/api/v1/users")
+        self.assertEqual(recon_extra._resolve_js_url("//cdn.test/x", js), "https://cdn.test/x")
+
+    def test_ignores_unsafe_or_ambiguous_schemes(self):
+        from t4wf1q.scanners import recon_extra
+        js = "https://a.test/app.js"
+        for bad in ("javascript:alert(1)", "data:text/html,x", "mailto:a@b.test", "", "relative/path"):
+            self.assertIsNone(recon_extra._resolve_js_url(bad, js))
+
+
+def _stub_httpx():
+    import sys, types
+    if "httpx" not in sys.modules:
+        httpx = types.ModuleType("httpx")
+        class _C:
+            def __init__(self, *a, **k): pass
+        httpx.Client = _C; httpx.AsyncClient = _C; httpx.Response = object
+        httpx.RequestError = Exception; httpx.HTTPError = Exception; httpx.TimeoutException = Exception
+        sys.modules["httpx"] = httpx
+
+
+class PipelineChainStageTests(unittest.TestCase):
+    """jsluice/arjun/evidence stages: what they write into the shared scan state."""
+
+    def setUp(self):
+        _stub_httpx()
+        from t4wf1q import pipeline
+        from t4wf1q.scanners import evidence, recon_extra
+        self.pipeline, self.evidence, self.recon_extra = pipeline, evidence, recon_extra
+        self.ctx = ScanContext(asset={"id": "t", "target": "a.test"}, scan_id="s", cfg=None,
+                               log=lambda l, m: None, scanners_cfg={})
+
+        class G:
+            def check(self, u):
+                return (True, "ok")
+        self.guard = G()
+
+    def _st(self, **over):
+        base = {"root": "a.test", "hosts": ["a.test"], "tech": {}, "errors": [], "live": [],
+                "discovered": [], "leads": [], "findings": [], "screenshots": []}
+        base.update(over)
+        return base
+
+    def test_jsluice_endpoints_feed_discovered_urls(self):
+        self.recon_extra.jsluice_scan = lambda ctx, urls: ["https://a.test/api/v1/secret"]
+        st = self._st(live=["https://a.test/app.js"])
+        self.pipeline._s_jsluice(self.ctx, st, self.guard, {})
+        self.assertIn("https://a.test/api/v1/secret", st["discovered"])
+
+    def test_arjun_only_adds_leads_for_the_newly_discovered_parameter(self):
+        """Regression: classifying the merged URL (old + new params) used to re-add the
+        URL's EXISTING parameter as if it were new. Only the genuinely new one should land."""
+        def fake_scan(ctx, urls):
+            f = Finding(title="Hidden parameter discovered: 'url'", severity="info",
+                       source="arjun", host="a.test", location="https://a.test/s?url=")
+            return [f], {"https://a.test/s?q=1": ["url", "debug"]}   # 'url'=SSRF-prone, 'debug'=not
+        self.recon_extra.arjun_scan = fake_scan
+        st = self._st(live=["https://a.test/s?q=1"],
+                     leads=[{"host": "a.test", "base": "https://a.test/s", "param": "q",
+                            "class": "XSS/SSTI/SQLi"}])
+        self.pipeline._s_arjun(self.ctx, st, self.guard, {})
+
+        new = [l for l in st["leads"] if l["param"] == "url"]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(new[0]["class"], "SSRF")
+        # the pre-existing 'q' lead must not be duplicated
+        q_leads = [l for l in st["leads"] if l["param"] == "q"]
+        self.assertEqual(len(q_leads), 1)
+        # 'debug' matches no known pattern, so it gets no lead (only the arjun finding itself)
+        self.assertFalse(any(l["param"] == "debug" for l in st["leads"]))
+        self.assertEqual(len([f for f in st["findings"] if f.source == "arjun"]), 1)
+
+    def test_evidence_stage_stores_the_capture_manifest(self):
+        self.evidence.capture = lambda ctx, urls, out_dir: [{"file": "a.png", "host": None, "url": None}]
+        import pathlib
+        class FakeCfg:
+            evidence_dir = pathlib.Path("/tmp/argus-test-evidence")
+        self.ctx.cfg = FakeCfg()
+        st = self._st(live=["https://a.test/"])
+        self.pipeline._s_evidence(self.ctx, st, self.guard, {})
+        self.assertEqual(st["screenshots"], [{"file": "a.png", "host": None, "url": None}])
+
+
+class SingleToolProfileTests(unittest.TestCase):
+    """Every stage gets a runnable single-tool profile; web stages get a probe first."""
+
+    def _profiles(self):
+        import sys, types
+        if "httpx" not in sys.modules:
+            httpx = types.ModuleType("httpx")
+            class _C:
+                def __init__(self, *a, **k): pass
+            httpx.Client = _C; httpx.AsyncClient = _C; httpx.Response = object
+            httpx.RequestError = Exception; httpx.HTTPError = Exception; httpx.TimeoutException = Exception
+            sys.modules["httpx"] = httpx
+        from t4wf1q import pipeline
+        return pipeline
+
+    def test_one_profile_per_stage(self):
+        pipeline = self._profiles()
+        single = {k: v for k, v in pipeline.PROFILES.items() if k.startswith("tool:")}
+        self.assertEqual(len(single), len(pipeline.STAGE_ORDER))
+        for stage in pipeline.STAGE_ORDER:
+            self.assertIn(f"tool:{stage}", single)
+
+    def test_web_stage_profiles_probe_first(self):
+        pipeline = self._profiles()
+        self.assertEqual(pipeline.PROFILES["tool:dalfox"]["stages"], ["probe", "dalfox"])
+        self.assertEqual(pipeline.PROFILES["tool:nuclei"]["stages"], ["probe", "nuclei"])
+
+    def test_standalone_stage_profiles_skip_probe(self):
+        pipeline = self._profiles()
+        self.assertEqual(pipeline.PROFILES["tool:recon"]["stages"], ["recon"])
+        self.assertEqual(pipeline.PROFILES["tool:nmap"]["stages"], ["nmap"])
+        self.assertEqual(pipeline.PROFILES["tool:gitleaks"]["stages"], ["gitleaks"])
+
+
 if __name__ == "__main__":
     unittest.main()

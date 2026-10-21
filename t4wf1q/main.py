@@ -219,6 +219,22 @@ def _queue_scan(asset: dict, profile: str, request: Request, action: str = "scan
     return scan
 
 
+@app.get("/api/profiles")
+def list_profiles(_=Depends(require_key)):  # noqa: B008
+    """Scan profiles, including one single-tool profile per stage (key "tool:<stage>").
+
+    Drives the New Scan dropdown so it never drifts out of sync with the pipeline.
+    """
+    out = []
+    for key, prof in pipeline.PROFILES.items():
+        out.append({
+            "key": key, "label": prof["label"], "stages": prof["stages"],
+            "single_tool": prof.get("single_tool"),
+        })
+    out.sort(key=lambda p: (p["single_tool"] is not None, p["key"]))
+    return out
+
+
 @app.post("/api/assets/{aid}/scan")
 def start_scan(aid: str, body: ScanIn, request: Request, _=Depends(require_key)):  # noqa: B008
     asset = db.get_asset(aid)
@@ -461,6 +477,32 @@ def get_report(name: str, _=Depends(require_key)):  # noqa: B008
     path = cfg.reports_dir / safe
     if not path.exists():
         raise HTTPException(404, "report not found")
+    return FileResponse(str(path))
+
+
+# ---------------------------------------------------------------- evidence (screenshots)
+@app.get("/api/assets/{aid}/evidence")
+def list_evidence(aid: str, _=Depends(require_key)):  # noqa: B008
+    asset_dir = cfg.evidence_dir / Path(aid).name
+    if not asset_dir.is_dir():
+        return []
+    out = []
+    for scan_dir in sorted(asset_dir.iterdir(), reverse=True):
+        if not scan_dir.is_dir():
+            continue
+        for img in sorted(scan_dir.iterdir()):
+            if img.suffix.lower() in (".png", ".jpg", ".jpeg"):
+                out.append({"scan_id": scan_dir.name, "file": img.name,
+                           "mtime": int(img.stat().st_mtime)})
+    return out
+
+
+@app.get("/api/assets/{aid}/evidence/{scan_id}/{name}")
+def get_evidence(aid: str, scan_id: str, name: str, _=Depends(require_key)):  # noqa: B008
+    # Every path segment is reduced to its bare filename first, so ../ cannot escape evidence_dir.
+    path = cfg.evidence_dir / Path(aid).name / Path(scan_id).name / Path(name).name
+    if not path.is_file():
+        raise HTTPException(404, "screenshot not found")
     return FileResponse(str(path))
 
 

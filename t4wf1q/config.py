@@ -112,6 +112,11 @@ class Config:
         return ROOT / self.get("reports", "dir", default="reports")
 
     @property
+    def evidence_dir(self) -> Path:
+        """Screenshots and other captured evidence, grouped under reports/evidence."""
+        return self.reports_dir / "evidence"
+
+    @property
     def raw(self) -> dict:
         return self._data
 

@@ -19,17 +19,23 @@ from urllib.parse import urlparse
 
 from . import alerts, db, events, report, research
 from .config import Config
-from .scanners import (chain, code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
-                       param_hints, recon_extra, takeover, web_extra, xss)
+from .scanners import (chain, code_extra, evidence, extra_tools, httpchecks, nmap, nuclei, paths,
+                       recon, param_hints, recon_extra, takeover, web_extra, xss)
 from .scanners.base import ScanContext
 from .scope import ScopeGuard, extract_host, looks_like_domain
 from .scoring import meets_threshold, normalize_severity
 
 STAGE_ORDER = [
-    "recon", "amass", "takeover", "probe", "whatweb", "discover", "params", "http", "paths", "xss",
-    "dalfox", "zap", "nuclei", "nikto", "testssl", "wpscan", "sqlmap", "nmap",
+    "recon", "amass", "takeover", "probe", "whatweb", "discover", "jsluice", "params", "arjun",
+    "http", "paths", "xss", "dalfox", "zap", "nuclei", "nikto", "testssl",
+    "wpscan", "sqlmap", "nmap", "evidence",
     "gitleaks", "semgrep", "depcheck", "trivy",
 ]
+
+# Stages that need something to point at: a single-tool run on a fresh asset
+# runs "probe" first so there is at least a live URL to work with.
+_NEEDS_PROBE = {"whatweb", "discover", "jsluice", "arjun", "params", "http", "paths", "xss",
+                "dalfox", "zap", "nuclei", "nikto", "testssl", "wpscan", "sqlmap", "evidence"}
 
 _API_PATHS = {"api", "config", "debug", "vcs", "secrets", "dev", "admin", "robots"}
 _WP_PATHS = {"wp", "config", "debug", "backup", "vcs", "secrets", "robots"}
@@ -39,9 +45,11 @@ PROFILES = {
     "recon":      {"label": "Recon only", "stages": ["recon", "amass", "probe", "takeover"]},
     "quick":      {"label": "Quick checks", "stages": ["probe", "http"]},
     "web":        {"label": "Web Application Assessment",
-                   "stages": ["probe", "whatweb", "discover", "params", "http", "paths", "xss", "zap", "nuclei", "sqlmap"]},
+                   "stages": ["probe", "whatweb", "discover", "jsluice", "params", "arjun", "http",
+                              "paths", "xss", "zap", "nuclei", "sqlmap", "evidence"]},
     "api":        {"label": "API Security Assessment",
-                   "stages": ["probe", "discover", "params", "http", "paths", "xss", "zap", "nuclei", "sqlmap"],
+                   "stages": ["probe", "discover", "jsluice", "params", "arjun", "http", "paths", "xss",
+                              "zap", "nuclei", "sqlmap"],
                    "path_categories": _API_PATHS},
     "infra":      {"label": "Domain & Infrastructure Assessment",
                    "stages": ["recon", "amass", "probe", "takeover", "nmap", "testssl", "nikto"]},
@@ -52,11 +60,20 @@ PROFILES = {
                    "stages": ["gitleaks", "semgrep", "depcheck"]},
     "dependency": {"label": "Dependency & Container Assessment", "stages": ["depcheck", "trivy"]},
     "owasp-full": {"label": "OWASP Top 10 web + network",
-                   "stages": ["recon", "amass", "probe", "takeover", "whatweb", "discover", "params", "http",
-                              "paths", "xss", "dalfox", "zap", "nuclei", "nikto", "testssl",
-                              "sqlmap", "nmap"]},
+                   "stages": ["recon", "amass", "probe", "takeover", "whatweb", "discover", "jsluice",
+                              "params", "arjun", "http", "paths", "xss", "dalfox", "zap", "nuclei",
+                              "nikto", "testssl", "sqlmap", "nmap", "evidence"]},
 }
 PROFILES["full"] = {"label": "Full Authorized Assessment", "stages": list(STAGE_ORDER)}
+
+# ----- single-tool profiles: "tool:<stage>" runs exactly one stage (plus a probe when the
+# stage needs a live URL). Lets a researcher point one scanner at one target on demand,
+# without committing to a whole profile. Dynamic, so a new stage is picked up for free.
+for _stage in STAGE_ORDER:
+    _stages = (["probe", _stage] if _stage in _NEEDS_PROBE and _stage != "probe" else [_stage])
+    PROFILES[f"tool:{_stage}"] = {"label": f"Single tool — {_stage}", "stages": _stages,
+                                  "single_tool": _stage}
+del _stage, _stages
 
 _queue: "Queue[tuple[str,str]]" = Queue()
 _worker_started = False
@@ -186,6 +203,17 @@ def _s_discover(ctx, st, guard, prof):
     st["live"] = list(dict.fromkeys(_live(ctx, st) + ok))
 
 
+def _s_jsluice(ctx, st, guard, prof):
+    # Chain: feed every discovered .js file into jsluice; what it finds becomes new
+    # discovered URLs, so params/xss/dalfox/nuclei downstream test them too.
+    js_candidates = [u for u in _live(ctx, st) + st["discovered"] if u.split("?")[0].endswith(".js")]
+    found = recon_extra.jsluice_scan(ctx, js_candidates)
+    ok = [u for u in found if guard.check(u)[0]]
+    if ok:
+        ctx.log("info", f"chain: jsluice found {len(ok)} endpoint(s) → added to the attack surface")
+        st["discovered"] = list(dict.fromkeys(st["discovered"] + ok))
+
+
 def _s_params(ctx, st, guard, prof):
     # Passive: parameter NAMES only. No request is sent for these leads.
     urls = list(dict.fromkeys(_live(ctx, st) + st["discovered"]))
@@ -193,6 +221,27 @@ def _s_params(ctx, st, guard, prof):
     st["leads"] = leads        # shared with later stages (dalfox, sqlmap) for focused testing
     st["findings"] += [param_hints.lead_to_finding(lead) for lead in leads]
     ctx.log("info", f"params: {len(leads)} manual-review lead(s) from parameter names")
+
+
+def _s_arjun(ctx, st, guard, prof):
+    # Chain: hidden parameters arjun discovers become new leads too, on top of the
+    # ones param_hints classified from the visible query strings.
+    urls = [u for u in _live(ctx, st) if guard.check(u)[0]][:recon_extra.MAX_ARJUN_URLS]
+    findings, discovered = recon_extra.arjun_scan(ctx, urls)
+    st["findings"] += findings
+    new_leads = []
+    for url, names in discovered.items():
+        base = url.split("?", 1)[0]
+        for name in names:
+            # One parameter at a time: classify_url only sees the NEW one, never the
+            # URL's existing query string (which params already classified it).
+            new_leads += param_hints.classify_url(f"{base}?{name}=1")
+    if new_leads:
+        seen = {(l["base"], l["param"], l["class"]) for l in st["leads"]}
+        added = [l for l in new_leads if (l["base"], l["param"], l["class"]) not in seen]
+        st["leads"] = st["leads"] + added
+        if added:
+            ctx.log("info", f"chain: {len(added)} hidden parameter(s) added as leads for dalfox/sqlmap")
 
 
 def _s_http(ctx, st, guard, prof):
@@ -269,6 +318,13 @@ def _s_nmap(ctx, st, guard, prof):
     st["findings"] += nmap.scan(ctx, hosts)
 
 
+def _s_evidence(ctx, st, guard, prof):
+    urls = [u for u in _live(ctx, st) if guard.check(u)[0]][:evidence.MAX_TARGETS]
+    out_dir = ctx.cfg.evidence_dir / ctx.asset["id"] / ctx.scan_id
+    manifest = evidence.capture(ctx, urls, out_dir)
+    st["screenshots"] = manifest
+
+
 def _code_guard(ctx) -> bool:
     if code_extra._local_path(ctx):
         return True
@@ -298,11 +354,11 @@ def _s_trivy(ctx, st, guard, prof):
 
 STAGE_FUNCS = {
     "recon": _s_recon, "amass": _s_amass, "takeover": _s_takeover, "probe": _s_probe,
-    "whatweb": _s_whatweb, "discover": _s_discover, "params": _s_params, "http": _s_http,
-    "paths": _s_paths,
+    "whatweb": _s_whatweb, "discover": _s_discover, "jsluice": _s_jsluice, "params": _s_params,
+    "arjun": _s_arjun, "http": _s_http, "paths": _s_paths,
     "xss": _s_xss, "dalfox": _s_dalfox, "zap": _s_zap, "nuclei": _s_nuclei,
     "nikto": _s_nikto, "testssl": _s_testssl, "wpscan": _s_wpscan, "sqlmap": _s_sqlmap,
-    "nmap": _s_nmap, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
+    "nmap": _s_nmap, "evidence": _s_evidence, "gitleaks": _s_gitleaks, "semgrep": _s_semgrep,
     "depcheck": _s_depcheck, "trivy": _s_trivy,
 }
 
@@ -389,7 +445,8 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
                       scanners_cfg=cfg.get("scanners", default={}))
     root = extract_host(asset["target"])
     st = {"root": root, "hosts": [root] if root else [], "live": [], "tech": {},
-          "discovered": [], "findings": [], "errors": [], "leads": [], "followups": set()}
+          "discovered": [], "findings": [], "errors": [], "leads": [], "followups": set(),
+          "screenshots": []}
 
     db.update_scan(scan_id, status="running", stage="start", progress=1, started_at=db.now_iso())
     events.publish("scan_update", scan_id=scan_id, status="running", progress=1)
@@ -421,7 +478,8 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
     final = "cancelled" if halted else "done"
     stats = {"total": len(st["findings"]), "new": new, **tally, "stages": active,
              "hosts": len(st["hosts"]), "urls": len(_live(ctx, st)),
-             "errors": st["errors"][:20], "halted": halted}
+             "errors": st["errors"][:20], "halted": halted,
+             "screenshots": len(st["screenshots"])}
     db.update_scan(scan_id, status=final, stage=final, progress=100,
                    finished_at=db.now_iso(), stats=stats)
     log("info", f"=== scan {final} · {stats['total']} finding(s), {new} new, "
