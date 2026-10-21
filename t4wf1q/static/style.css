@@ -232,6 +232,15 @@ tr.clickable,.clickable{cursor:pointer}
 .chk{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--border);
   border-radius:var(--radius-sm);margin-bottom:6px;background:var(--surface-2)}
 .chk .ttl{flex:1;font-size:13px}
+.chk-wide{align-items:flex-start}
+.chk-wide .ttl{min-width:0}
+.how{margin-top:8px;font-size:12px;color:var(--text-2)}
+.how summary{cursor:pointer;color:var(--brand-2);font-weight:600;list-style:none}
+.how summary::-webkit-details-marker{display:none}
+.how summary::before{content:"▸ ";}
+.how[open] summary::before{content:"▾ "}
+.how p{margin:6px 0 0;line-height:1.6}
+.verify-block{white-space:pre-wrap;font-size:12px;line-height:1.6}
 .seg{display:inline-flex;border:1px solid var(--border-2);border-radius:8px;overflow:hidden;flex:none}
 .seg button{all:unset;cursor:pointer;padding:6px 10px;font-size:11px;font-weight:700;color:var(--text-2)}
 .seg button:hover{background:var(--raised);color:var(--text)}

@@ -162,9 +162,14 @@ def _migrate(c: sqlite3.Connection) -> None:
     """Bring older databases up to the current schema (idempotent)."""
     cols = {r["name"] for r in c.execute("PRAGMA table_info(findings)")}
     for col, decl in (("cve", "TEXT"), ("cwe", "TEXT"), ("confidence", "TEXT"),
+                      ("verify", "TEXT"),
                       ("verification", "TEXT DEFAULT 'unverified'")):
         if col not in cols:
             c.execute(f"ALTER TABLE findings ADD COLUMN {col} {decl}")
+    ck = {r["name"] for r in c.execute("PRAGMA table_info(checklist)")}
+    for col in ("severity", "how"):
+        if col not in ck:
+            c.execute(f"ALTER TABLE checklist ADD COLUMN {col} TEXT")
     c.execute("UPDATE findings SET verification='manually_verified'"
               " WHERE status='verified' AND verification='unverified'")
     for old, new in _LEGACY_STATUS.items():
@@ -342,14 +347,14 @@ def upsert_finding(asset_id: str, scan_id: str, f: dict) -> tuple[dict, bool]:
         c.execute(
             "INSERT INTO findings(id,asset_id,scan_id,fingerprint,title,severity,cvss,owasp,"
             "host,location,source,description,evidence,remediation,reference,status,"
-            "first_seen,last_seen,seen_count,cve,cwe,confidence)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?)",
+            "first_seen,last_seen,seen_count,cve,cwe,confidence,verify)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)",
             (
                 fid, asset_id, scan_id, fp, f["title"], f["severity"], f.get("cvss"),
                 f.get("owasp"), f.get("host"), f.get("location"), f.get("source"),
                 f.get("description"), f.get("evidence"), f.get("remediation"),
                 json.dumps(f.get("reference", [])), "new", ts, ts,
-                f.get("cve"), f.get("cwe"), f.get("confidence"),
+                f.get("cve"), f.get("cwe"), f.get("confidence"), f.get("verify"),
             ),
         )
         return get_finding(fid), True
@@ -428,13 +433,24 @@ def owasp_counts(asset_id: str | None = None) -> dict[str, int]:
 
 # --- checklist ------------------------------------------------------------
 def ensure_checklist(asset_id: str, catalog: list[dict]) -> None:
+    """Add any catalog items the asset lacks, and refresh their guidance text.
+
+    Existing states and notes are kept. Only the catalog-owned fields change, so an
+    older asset picks up new hunting items and the updated 'how to test' text.
+    """
     ts = now_iso()
     with conn() as c:
         for item in catalog:
             c.execute(
-                "INSERT OR IGNORE INTO checklist(id,asset_id,item_key,owasp,title,state,updated_at)"
-                " VALUES(?,?,?,?,?,?,?)",
-                (new_id("cl_"), asset_id, item["key"], item["owasp"], item["title"], "todo", ts),
+                "INSERT OR IGNORE INTO checklist(id,asset_id,item_key,owasp,title,state,updated_at,severity,how)"
+                " VALUES(?,?,?,?,?,?,?,?,?)",
+                (new_id("cl_"), asset_id, item["key"], item["owasp"], item["title"], "todo", ts,
+                 item.get("severity", "medium"), item.get("how", "")),
+            )
+            c.execute(
+                "UPDATE checklist SET owasp=?, title=?, severity=?, how=? WHERE asset_id=? AND item_key=?",
+                (item["owasp"], item["title"], item.get("severity", "medium"), item.get("how", ""),
+                 asset_id, item["key"]),
             )
 
 

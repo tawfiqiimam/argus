@@ -329,5 +329,37 @@ class ChainTests(unittest.TestCase):
         self.assertEqual(out[0].confidence, "medium")
 
 
+class ResearchAndChecklistTests(unittest.TestCase):
+    def test_enrich_adds_pinpoint_steps_and_research_links(self):
+        from t4wf1q import research
+        f = {"title": "Potential reflected XSS in parameter 'q'", "owasp": "A03", "cwe": "CWE-79",
+             "source": "argus-xss", "host": "a.test", "location": "https://a.test/s?q=",
+             "reference": []}
+        research.enrich(f)
+        self.assertIn("Pinpoint:", f["verify"])
+        self.assertIn("parameter 'q'", f["verify"])
+        self.assertIn("Verify by hand", f["verify"])
+        self.assertTrue(any("cwe.mitre.org/data/definitions/79" in r for r in f["reference"]))
+        self.assertTrue(any("cheatsheetseries.owasp.org" in r for r in f["reference"]))
+
+    def test_verification_text_stops_at_proof(self):
+        from t4wf1q import research
+        for owasp in research._OWASP:
+            steps, _ = research._OWASP[owasp]
+            joined = " ".join(steps).lower()
+            self.assertNotIn("exfiltrat", joined)
+            self.assertNotIn("dump the database", joined)
+
+    def test_checklist_catalog_is_complete_and_unique(self):
+        from t4wf1q.checklist import CATALOG
+        keys = [i["key"] for i in CATALOG]
+        self.assertEqual(len(keys), len(set(keys)))
+        self.assertGreaterEqual(len(CATALOG), 30)
+        for i in CATALOG:
+            self.assertIn(i["severity"], {"critical", "high", "medium", "low"})
+            self.assertTrue(i["how"].strip())
+            self.assertTrue(i["owasp"].startswith("A"))
+
+
 if __name__ == "__main__":
     unittest.main()

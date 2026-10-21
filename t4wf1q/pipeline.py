@@ -17,7 +17,7 @@ import traceback
 from queue import Queue
 from urllib.parse import urlparse
 
-from . import alerts, db, events, report
+from . import alerts, db, events, report, research
 from .config import Config
 from .scanners import (chain, code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
                        param_hints, recon_extra, takeover, web_extra, xss)
@@ -307,6 +307,41 @@ STAGE_FUNCS = {
 }
 
 
+def _detect_followups(st: dict) -> set[str]:
+    """What the gathered evidence says we should deepen with (tools triggering tools)."""
+    fu: set[str] = set()
+    tech_all = " ".join(t.lower() for techs in st["tech"].values() for t in techs)
+    titles = " ".join((getattr(f, "title", "") or "").lower() for f in st["findings"])
+    blob = tech_all + " " + titles
+    if "wordpress" in blob or "wp-" in blob:
+        fu.add("wpscan")        # a WordPress fingerprint pulls in the WordPress scanner
+    # A parameter that reflects or looks injection-prone deepens with dalfox.
+    if any(getattr(f, "source", "") == "argus-xss" for f in st["findings"]):
+        fu.add("dalfox")
+    return fu
+
+
+def _run_followups(ctx, st, guard, prof, already: set, scan_id: str, log) -> None:
+    """Run evidence-driven follow-up stages the profile did not include. Bounded to 2 rounds."""
+    ran = set(already)
+    for _round in range(2):
+        wanted = _detect_followups(st) - ran
+        stages = [s for s in STAGE_ORDER if s in wanted]
+        if not stages:
+            return
+        for stage in stages:
+            if _halt_reason(scan_id):
+                return
+            ran.add(stage)
+            log("info", f"chain: evidence triggered a deeper '{stage}' check")
+            _set_stage(scan_id, f"chain:{stage}", 90, log)
+            try:
+                STAGE_FUNCS[stage](ctx, st, guard, prof)
+            except Exception as e:
+                st["errors"].append(f"chain {stage} failed: {type(e).__name__}: {str(e)[:120]}")
+                log("error", f"chain {stage} failed: {type(e).__name__}")
+
+
 # ---------------------------------------------------------------- store + run
 def _store(ctx: ScanContext, st: dict, cfg: Config, threshold: str) -> tuple[int, dict]:
     aid = ctx.asset["id"]
@@ -315,6 +350,7 @@ def _store(ctx: ScanContext, st: dict, cfg: Config, threshold: str) -> tuple[int
     for f in st["findings"]:
         d = f.to_dict()
         d["severity"] = normalize_severity(d["severity"])
+        research.enrich(d)                 # pinpoint + manual verification + research links
         tally[d["severity"]] += 1
         stored, is_new = db.upsert_finding(aid, ctx.scan_id, d)
         if is_new:
@@ -353,7 +389,7 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
                       scanners_cfg=cfg.get("scanners", default={}))
     root = extract_host(asset["target"])
     st = {"root": root, "hosts": [root] if root else [], "live": [], "tech": {},
-          "discovered": [], "findings": [], "errors": [], "leads": []}
+          "discovered": [], "findings": [], "errors": [], "leads": [], "followups": set()}
 
     db.update_scan(scan_id, status="running", stage="start", progress=1, started_at=db.now_iso())
     events.publish("scan_update", scan_id=scan_id, status="running", progress=1)
@@ -374,6 +410,9 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
             msg = f"{stage} failed: {type(e).__name__}: {str(e)[:160]}"
             st["errors"].append(msg)
             log("error", msg)
+    # Deep chaining: let the evidence gathered above trigger deeper, focused checks.
+    if not halted:
+        _run_followups(ctx, st, guard, prof, set(active), scan_id, log)
     halted = halted or _halt_reason(scan_id)
 
     _set_stage(scan_id, "store", 92, log)

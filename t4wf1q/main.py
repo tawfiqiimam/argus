@@ -341,10 +341,8 @@ def stats(_=Depends(require_key)):  # noqa: B008
 # ---------------------------------------------------------------- checklist
 @app.get("/api/assets/{aid}/checklist")
 def get_checklist(aid: str, _=Depends(require_key)):  # noqa: B008
+    db.ensure_checklist(aid, CATALOG)      # idempotent: adds new items, refreshes guidance
     items = db.list_checklist(aid)
-    if not items:
-        db.ensure_checklist(aid, CATALOG)
-        items = db.list_checklist(aid)
     return {"items": items, "coverage": coverage(items)}
 
 

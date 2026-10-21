@@ -493,8 +493,12 @@ async function renderChecklist(v) {
     d.items.forEach(i => (groups[i.owasp] ||= []).push(i));
     $("#clBody").innerHTML = Object.keys(groups).sort().map(code => `
       <div class="chk-group"><h3>${code} · ${OWASP_NAMES[code] || ""}</h3>
-      ${groups[code].map(i => `<div class="chk">
-        <div class="ttl">${esc(i.title)}</div>
+      ${groups[code].map(i => `<div class="chk chk-wide">
+        <div class="ttl">
+          <div class="inline" style="gap:8px"><span class="pill p-${esc(i.severity || "medium")}">${esc(i.severity || "medium")}</span>
+            <span>${esc(i.title)}</span></div>
+          ${i.how ? `<details class="how"><summary>How to test by hand</summary><p>${esc(i.how)}</p></details>` : ""}
+        </div>
         <div class="seg" data-key="${i.item_key}">
           ${["pass", "fail", "na", "todo"].map(st =>
             `<button class="${i.state === st ? "on-" + st : ""}" onclick="setChk('${aid}','${i.item_key}','${st}',this)">${st.toUpperCase()}</button>`).join("")}
@@ -673,6 +677,7 @@ window.viewFinding = async (fid) => {
       <div class="k">Seen</div><div>${f.seen_count}× · first ${timeAgo(f.first_seen)}</div>
     </div>
     ${f.description ? `<div class="block">${esc(f.description)}</div>` : ""}
+    ${f.verify ? `<label>Verify by hand</label><div class="block verify-block">${esc(f.verify)}</div>` : ""}
     ${f.evidence ? `<label>Evidence</label><div class="block mono">${esc(f.evidence)}</div>` : ""}
     ${f.remediation ? `<label>Remediation</label><div class="block">${esc(f.remediation)}</div>` : ""}
     ${refs.length ? `<label>References</label><div class="block">${refs.map(r => `<div><a href="${esc(r)}" target="_blank">${esc(r)}</a></div>`).join("")}</div>` : ""}
