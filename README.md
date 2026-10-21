@@ -137,6 +137,8 @@ docker compose --profile lab up    # also launches Juice Shop on :3000
 
 > **Scanner tools are installed for you.** `setup.sh` runs `scripts/install-tools.sh`, which installs every tool Argus drives (nuclei, nmap, subfinder, httpx, ZAP, SQLMap, and more). Tools that cannot be installed automatically are listed at the end with a manual hint. Argus still runs without them; the stages that need them are skipped and logged. Use `SKIP_TOOLS=1 ./setup.sh` to skip this step.
 
+> **Install or remove one tool at a time from the dashboard.** The Tools page has an Install/Uninstall button per tool — it runs `install-tools.sh` for just that one, in the background, with the output in a viewable log. Only one tool job runs at a time. A tool apt or gem put straight on the system (not something Argus installed itself) is never auto-removed — uninstall refuses and tells you the `sudo apt remove …` to run by hand. If apt-based installs from the dashboard hang asking for a password, that's expected: a background job has no terminal to type one into. Copy `scripts/argus-sudoers.example` to `/etc/sudoers.d/argus-tools` (after reading it) to let just `apt-get install` for Argus's own tool list run without a prompt — nothing else.
+
 ## Updating
 
 ```bash

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, events, pipeline, report, tools
+from . import db, events, jobs, pipeline, report, tools
 from .checklist import CATALOG, coverage
 from .config import get_config
 from .ratelimit import RateLimiter
@@ -520,6 +520,43 @@ def export_asset(aid: str, fmt: str, _=Depends(require_key)):  # noqa: B008
 @app.get("/api/tools")
 def tools_status(_=Depends(require_key)):  # noqa: B008
     return tools.detect()
+
+
+@app.post("/api/tools/{key}/install")
+def tool_install(key: str, request: Request, _=Depends(require_key)):  # noqa: B008
+    try:
+        job = jobs.start_install(key, _client_ip(request))
+    except jobs.UnknownTool:
+        raise HTTPException(404, f"unknown tool: {key}")
+    except jobs.AlreadyRunning as exc:
+        raise HTTPException(409, f"a tool job is already running ({exc}). Wait for it to finish.")
+    return jobs.public_view(job)
+
+
+@app.post("/api/tools/{key}/uninstall")
+def tool_uninstall(key: str, request: Request, _=Depends(require_key)):  # noqa: B008
+    try:
+        job = jobs.start_uninstall(key, _client_ip(request))
+    except jobs.UnknownTool:
+        raise HTTPException(404, f"unknown tool: {key}")
+    except jobs.AlreadyRunning as exc:
+        raise HTTPException(409, f"a tool job is already running ({exc}). Wait for it to finish.")
+    return jobs.public_view(job)
+
+
+@app.get("/api/tools/jobs")
+def tool_jobs(limit: int = 50, _=Depends(require_key)):  # noqa: B008
+    return [jobs.public_view(j) for j in jobs.recent(max(1, min(limit, 200)))]
+
+
+@app.get("/api/tools/jobs/{job_id}")
+def tool_job_detail(job_id: str, _=Depends(require_key)):  # noqa: B008
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    out = jobs.public_view(job)
+    out["log"] = jobs.log_tail(job)
+    return out
 
 
 # ---------------------------------------------------------------- websocket

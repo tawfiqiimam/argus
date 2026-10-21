@@ -1,0 +1,45 @@
+# Argus VMS — optional sudoers rule for the "Install" button on the Tools page.
+#
+# The Tools page runs scripts/install-tools.sh in the background to install
+# one scanner at a time. Several of those installers shell out to
+# `apt-get install -y <package>`, which needs root. A background job has no
+# terminal to type a password into, so without this rule every apt-based
+# install in the dashboard will fail immediately with a clear "needs sudo"
+# message instead of hanging — it NEVER falls back to silently running as
+# root, and it never touches sudoers itself.
+#
+# This file is not applied automatically. Copy it in yourself, after reading
+# it, if you want apt-based installs to work from the dashboard:
+#
+#   sudo cp scripts/argus-sudoers.example /etc/sudoers.d/argus-tools
+#   sudo chmod 440 /etc/sudoers.d/argus-tools
+#   sudo visudo -c                      # verify the file parses cleanly
+#
+# Replace "argus" below with the Linux user Argus actually runs as.
+# The rule is scoped to exactly `apt-get install -y <these packages>` and
+# `apt-get update` — nothing else, and no wildcard package name. It does NOT
+# grant `apt-get remove`: Argus never uninstalls a system package on its own
+# (see scripts/install-tools.sh:uninstall_tool), so there's nothing to allow.
+#
+# install-tools.sh exports DEBIAN_FRONTEND=noninteractive itself (so apt
+# never blocks on a debconf dialog); this just lets sudo pass it through
+# instead of stripping it, without changing which commands are allowed.
+Defaults:argus env_keep += "DEBIAN_FRONTEND"
+
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get update -qq
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y whatweb
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y amass
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y nmap
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y nikto
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y sqlmap
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y testssl.sh
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y wpscan
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y zaproxy
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y trivy
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y git
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y unzip
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y python3-venv
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y default-jre-headless
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y openjdk-21-jre-headless
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y openjdk-17-jre-headless
+argus ALL=(root) NOPASSWD: /usr/bin/apt-get install -y golang-go

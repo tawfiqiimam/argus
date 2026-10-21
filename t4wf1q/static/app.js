@@ -86,6 +86,14 @@ function handleEvent(ev) {
     if (S.view === "scope" || S.view === "live") render(true);
   } else if (ev.kind === "report_ready") {
     toast("Report generated ✓");
+  } else if (ev.kind === "tool_job") {
+    if (ev.status !== "running") {
+      const verb = ev.action === "install" ? "Installed" : "Uninstalled";
+      const msg = { done: `${verb} ${ev.tool} ✓`, failed: `${ev.action} ${ev.tool} failed — see the log`,
+        refused: `${ev.tool}: needs a human with sudo — see the log` }[ev.status] || `${ev.tool}: ${ev.status}`;
+      toast(msg);
+    }
+    if (S.view === "tools") render(true);
   }
 }
 
@@ -868,8 +876,13 @@ function scansTable(ss) {
 
 // ---- TOOLS --------------------------------------------------
 async function renderTools(v) {
-  const tools = await api("/api/tools");
+  const [tools, job] = await Promise.all([
+    api("/api/tools"),
+    api("/api/tools/jobs?limit=1").then(r => r[0] || null).catch(() => null),
+  ]);
+  S.toolsCache = tools;
   const installed = tools.filter(t => t.installed).length;
+  const busy = job && job.status === "running" ? job : null;
   const groups = {};
   tools.forEach(t => (groups[t.category || "Other"] ||= []).push(t));
   v.innerHTML = `<div class="panel">
@@ -878,12 +891,13 @@ async function renderTools(v) {
         <h2>Tool status</h2>
         <p class="panel-sub" style="margin:0">${installed} of ${tools.length} installed. A missing tool is skipped during a scan, and the console says so.</p>
       </div>
-      <span class="faint" style="font-size:12px">Install or update with <code>./update.sh</code></span>
+      <span class="faint" style="font-size:12px">Install one at a time below, or everything with <code>./update.sh</code></span>
     </div>
+    <div id="toolJobBar"></div>
     ${Object.keys(groups).map(cat => `
       <h3 style="font-size:12px;color:var(--text-2);margin:20px 0 10px;font-weight:650">${esc(cat)}</h3>
       <div class="tool-grid">${groups[cat].map(t => `
-        <div class="tool">
+        <div class="tool" id="tool-${esc(t.key)}">
           <div class="head">
             <span class="name">${esc(t.binary)}</span>
             <span class="status ${t.installed ? "done" : "cancelled"}">${t.installed ? "Installed" : "Missing"}</span>
@@ -891,10 +905,49 @@ async function renderTools(v) {
           ${t.installed
             ? `<div class="ver">${esc(t.version || "installed")}</div>`
             : `<div class="hint">${esc(t.install_hint || "Run ./update.sh to install.")}</div>`}
+          <div style="display:flex;gap:6px;margin-top:8px">
+            ${t.installed
+              ? `<button class="btn sm ghost" ${busy ? "disabled" : ""} onclick="runToolJob('${esc(t.key)}','uninstall')">Uninstall</button>`
+              : `<button class="btn sm" ${busy ? "disabled" : ""} onclick="runToolJob('${esc(t.key)}','install')">Install</button>`}
+          </div>
         </div>`).join("")}
       </div>`).join("")}
   </div>`;
+  if (busy) renderToolJobBar(busy); else if (job) renderToolJobBar(job, true);
 }
+
+window.runToolJob = async (key, action) => {
+  try {
+    const job = await api(`/api/tools/${encodeURIComponent(key)}/${action}`, { method: "POST" });
+    toast(`${action === "install" ? "Installing" : "Uninstalling"} ${key}…`);
+    renderToolJobBar(job);
+    if (S.view === "tools") render(true);
+  } catch (e) { toast(`Could not start: ${errText(e)}`); }
+};
+
+function renderToolJobBar(job, pastRun = false) {
+  const bar = $("#toolJobBar");
+  if (!bar) return;
+  if (!job) { bar.innerHTML = ""; return; }
+  const labels = { running: "Running…", done: "Done ✓", failed: "Failed",
+    refused: "Needs a human with sudo — see the log" };
+  const tone = { running: "running", done: "done", failed: "cancelled", refused: "cancelled" }[job.status] || "";
+  bar.innerHTML = `<div class="block" style="margin:10px 0 4px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span class="status ${tone}">${esc(labels[job.status] || job.status)}</span>
+    <span class="mono" style="font-size:12px">${job.action} ${esc(job.tool)}</span>
+    <button class="btn sm ghost" onclick="showToolJobLog('${esc(job.id)}')">View log</button>
+    ${pastRun ? `<span class="faint" style="font-size:12px">last run</span>` : ""}
+  </div>`;
+}
+
+window.showToolJobLog = async (jobId) => {
+  try {
+    const job = await api(`/api/tools/jobs/${encodeURIComponent(jobId)}`);
+    openDrawer(`<h2 style="margin:0 0 4px">${esc(job.action)} ${esc(job.tool)}</h2>
+      <div class="muted" style="margin-bottom:10px">Status: ${esc(job.status)}</div>
+      <pre class="mono" style="white-space:pre-wrap;font-size:12px;max-height:60vh;overflow:auto;background:var(--panel-2);padding:10px;border-radius:8px">${esc(job.log || "(no output yet)")}</pre>`);
+  } catch (e) { toast(`Could not load log: ${errText(e)}`); }
+};
 
 // ---- AUDIT --------------------------------------------------
 async function renderAudit(v) {

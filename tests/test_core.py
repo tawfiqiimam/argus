@@ -521,5 +521,149 @@ class SingleToolProfileTests(unittest.TestCase):
         self.assertEqual(pipeline.PROFILES["tool:gitleaks"]["stages"], ["gitleaks"])
 
 
+class ToolJobsTests(unittest.TestCase):
+    """Background install/uninstall jobs: one at a time, real exit codes, no real subprocess."""
+
+    def setUp(self):
+        from t4wf1q import jobs
+        self.jobs = jobs
+        # Fresh in-memory state per test, and never touch the real db/events.
+        jobs._jobs.clear()
+        jobs._order.clear()
+        if jobs._lock.locked():
+            jobs._lock.release()
+        self._patches = []
+        for mod, name, replacement in [
+            (jobs.db, "audit", lambda *a, **k: None),
+            (jobs.events, "publish", lambda *a, **k: None),
+        ]:
+            original = getattr(mod, name)
+            setattr(mod, name, replacement)
+            self._patches.append((mod, name, original))
+
+    def tearDown(self):
+        for mod, name, original in self._patches:
+            setattr(mod, name, original)
+
+    def _fake_popen(self, rc, delay=0.0):
+        import subprocess
+
+        class _Proc:
+            pid = 4242
+
+            def wait(self, timeout=None):
+                import time as _t
+                if delay:
+                    _t.sleep(delay)
+                return rc
+
+            def kill(self):
+                pass
+
+        return lambda *a, **k: _Proc()
+
+    def test_unknown_tool_is_rejected(self):
+        with self.assertRaises(self.jobs.UnknownTool):
+            self.jobs.start_install("not-a-real-tool")
+
+    def test_install_runs_the_script_with_the_tool_key_and_reports_done(self):
+        import subprocess
+        real_popen = subprocess.Popen
+        subprocess.Popen = self._fake_popen(0)
+        try:
+            job = self.jobs.start_install("nuclei")
+            self.assertEqual(job["tool"], "nuclei")
+            self.assertEqual(job["action"], "install")
+            for _ in range(50):
+                if self.jobs.get(job["id"])["status"] != "running":
+                    break
+                __import__("time").sleep(0.02)
+        finally:
+            subprocess.Popen = real_popen
+        self.assertEqual(self.jobs.get(job["id"])["status"], "done")
+
+    def test_uninstall_refused_exit_code_is_surfaced_distinctly(self):
+        import subprocess
+        real_popen = subprocess.Popen
+        subprocess.Popen = self._fake_popen(2)
+        try:
+            job = self.jobs.start_uninstall("whatweb")
+            for _ in range(50):
+                if self.jobs.get(job["id"])["status"] != "running":
+                    break
+                __import__("time").sleep(0.02)
+        finally:
+            subprocess.Popen = real_popen
+        self.assertEqual(self.jobs.get(job["id"])["status"], "refused")
+
+    def test_failed_install_is_distinguished_from_refused(self):
+        import subprocess
+        real_popen = subprocess.Popen
+        subprocess.Popen = self._fake_popen(1)
+        try:
+            job = self.jobs.start_install("semgrep")
+            for _ in range(50):
+                if self.jobs.get(job["id"])["status"] != "running":
+                    break
+                __import__("time").sleep(0.02)
+        finally:
+            subprocess.Popen = real_popen
+        self.assertEqual(self.jobs.get(job["id"])["status"], "failed")
+
+    def test_a_second_job_is_refused_while_one_is_running(self):
+        import subprocess
+        real_popen = subprocess.Popen
+        subprocess.Popen = self._fake_popen(0, delay=0.2)
+        try:
+            self.jobs.start_install("nuclei")
+            with self.assertRaises(self.jobs.AlreadyRunning):
+                self.jobs.start_install("trivy")
+            # let the first job finish so it doesn't leak into later tests
+            for _ in range(50):
+                if self.jobs.current() is None:
+                    break
+                __import__("time").sleep(0.02)
+        finally:
+            subprocess.Popen = real_popen
+
+    def test_public_view_never_includes_the_log_path(self):
+        import subprocess
+        real_popen = subprocess.Popen
+        subprocess.Popen = self._fake_popen(0)
+        try:
+            job = self.jobs.start_install("nuclei")
+            for _ in range(50):
+                if self.jobs.get(job["id"])["status"] != "running":
+                    break
+                __import__("time").sleep(0.02)
+            view = self.jobs.public_view(self.jobs.get(job["id"]))
+        finally:
+            subprocess.Popen = real_popen
+        self.assertNotIn("log_path", view)
+        self.assertNotIn("pid", view)
+        self.assertEqual(view["tool"], "nuclei")
+
+
+class ToolsScriptConsistencyTests(unittest.TestCase):
+    """Every key in tools.TOOLS has a matching install/uninstall case in the shell script."""
+
+    def test_every_tool_key_has_a_dispatch_case(self):
+        from t4wf1q import tools
+        script = (pathlib.Path(__file__).resolve().parent.parent
+                  / "scripts" / "install-tools.sh").read_text()
+        for key, *_ in tools.TOOLS:
+            needle = f'"{key}")' if key in ("testssl.sh", "dependency-check") else f"{key})"
+            self.assertIn(needle, script, f"{key} has no dispatch_install case in install-tools.sh")
+
+    def test_every_tool_key_has_a_binary_lookup_case(self):
+        from t4wf1q import tools
+        script = (pathlib.Path(__file__).resolve().parent.parent
+                  / "scripts" / "install-tools.sh").read_text()
+        binary_fn = script.split("_binary_for() {", 1)[1].split("\n}", 1)[0]
+        for key, *_ in tools.TOOLS:
+            needle = f'"{key}")' if key in ("testssl.sh", "dependency-check") else f"{key})"
+            self.assertIn(needle, binary_fn, f"{key} has no _binary_for case in install-tools.sh")
+
+
 if __name__ == "__main__":
     unittest.main()
