@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 from . import alerts, db, events, report
 from .config import Config
-from .scanners import (code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
+from .scanners import (chain, code_extra, extra_tools, httpchecks, nmap, nuclei, paths, recon,
                        param_hints, recon_extra, takeover, web_extra, xss)
 from .scanners.base import ScanContext
 from .scope import ScopeGuard, extract_host, looks_like_domain
@@ -190,6 +190,7 @@ def _s_params(ctx, st, guard, prof):
     # Passive: parameter NAMES only. No request is sent for these leads.
     urls = list(dict.fromkeys(_live(ctx, st) + st["discovered"]))
     leads = param_hints.leads_for_urls(urls)
+    st["leads"] = leads        # shared with later stages (dalfox, sqlmap) for focused testing
     st["findings"] += [param_hints.lead_to_finding(lead) for lead in leads]
     ctx.log("info", f"params: {len(leads)} manual-review lead(s) from parameter names")
 
@@ -207,8 +208,19 @@ def _s_xss(ctx, st, guard, prof):
 
 
 def _s_dalfox(ctx, st, guard, prof):
-    urls = [u for u in _live(ctx, st) + st["discovered"] if guard.check(u)[0]][:20]
-    st["findings"] += web_extra.dalfox(ctx, urls)
+    in_scope = [u for u in _live(ctx, st) + st["discovered"] if "?" in u and guard.check(u)[0]]
+    # Chain: parameters that param_hints called XSS-prone, or that the reflection probe
+    # already flagged, are tested first and are the ones most worth the budget.
+    focus = chain.lead_keys(st.get("leads", []), chain.XSS_CLASSES) | chain.reflection_keys(st["findings"])
+    urls, n_focus = chain.prioritize(in_scope, focus, cap=20)
+    if n_focus:
+        ctx.log("info", f"chain: {n_focus} parameter(s) flagged by earlier stages → dalfox tests them first")
+    found = web_extra.dalfox(ctx, urls)
+    # Chain: where dalfox and the reflection probe agree, mark it as stronger proof.
+    found, corro = chain.annotate_corroboration(found, chain.reflection_keys(st["findings"]))
+    if corro:
+        ctx.log("info", f"chain: {corro} dalfox finding(s) corroborated by the reflection probe (confidence raised)")
+    st["findings"] += found
 
 
 def _s_zap(ctx, st, guard, prof):
@@ -244,7 +256,11 @@ def _s_sqlmap(ctx, st, guard, prof):
     if not db.get_setting("allow_intrusive", False):
         ctx.log("info", "sqlmap skipped: intrusive checks are off (enable in Settings after you have authorization)")
         return
-    urls = [u for u in _live(ctx, st) + st["discovered"] if guard.check(u)[0]]
+    in_scope = [u for u in _live(ctx, st) + st["discovered"] if "?" in u and guard.check(u)[0]]
+    focus = chain.lead_keys(st.get("leads", []), chain.SQLI_CLASSES)
+    urls, n_focus = chain.prioritize(in_scope, focus, cap=len(in_scope))
+    if n_focus:
+        ctx.log("info", f"chain: {n_focus} parameter(s) flagged as injection-prone → sqlmap tests them first")
     st["findings"] += extra_tools.sqlmap(ctx, urls, allow_intrusive=True)
 
 
@@ -337,7 +353,7 @@ def _run_scan(cfg: Config, scan_id: str, asset_id: str) -> None:
                       scanners_cfg=cfg.get("scanners", default={}))
     root = extract_host(asset["target"])
     st = {"root": root, "hosts": [root] if root else [], "live": [], "tech": {},
-          "discovered": [], "findings": [], "errors": []}
+          "discovered": [], "findings": [], "errors": [], "leads": []}
 
     db.update_scan(scan_id, status="running", stage="start", progress=1, started_at=db.now_iso())
     events.publish("scan_update", scan_id=scan_id, status="running", progress=1)

@@ -277,5 +277,57 @@ class ParamHintTests(unittest.TestCase):
         self.assertEqual(leads[0]["base"], "https://a.test/p")   # userinfo stripped
 
 
+class ChainTests(unittest.TestCase):
+    """Lead-driven chaining: focus real URLs first, corroborate agreeing checks. Pure logic."""
+
+    def _xss_finding(self, url_with_param):
+        return Finding(title="x", severity="medium", source="argus-xss", host="a.test",
+                       location=url_with_param)
+
+    def test_reflection_keys_extracted_from_xss_findings_only(self):
+        from t4wf1q.scanners import chain
+        fs = [self._xss_finding("https://a.test/s?q="),
+              Finding(title="y", severity="low", source="nuclei", host="a.test", location="https://a.test/x?z=")]
+        self.assertEqual(chain.reflection_keys(fs), {("a.test", "/s", "q")})
+
+    def test_prioritize_puts_focused_params_first_without_inventing_urls(self):
+        from t4wf1q.scanners import chain
+        urls = ["https://a.test/p?safe=1", "https://a.test/s?q=1", "https://a.test/r?other=2"]
+        focus = {("a.test", "/s", "q")}
+        ordered, n = chain.prioritize(urls, focus, cap=10)
+        self.assertEqual(ordered[0], "https://a.test/s?q=1")   # focused one first
+        self.assertEqual(n, 1)
+        self.assertEqual(set(ordered), set(urls))              # same set, only reordered
+
+    def test_prioritize_respects_cap(self):
+        from t4wf1q.scanners import chain
+        urls = [f"https://a.test/p{i}?x={i}" for i in range(30)]
+        ordered, _ = chain.prioritize(urls, set(), cap=20)
+        self.assertEqual(len(ordered), 20)
+
+    def test_lead_keys_filter_by_class(self):
+        from t4wf1q.scanners import chain
+        leads = [{"host": "a.test", "base": "https://a.test/s", "param": "q", "class": "XSS/SSTI/SQLi"},
+                 {"host": "a.test", "base": "https://a.test/g", "param": "next", "class": "Open Redirect"}]
+        self.assertEqual(chain.lead_keys(leads, chain.XSS_CLASSES), {("a.test", "/s", "q")})
+
+    def test_corroboration_raises_confidence_and_notes(self):
+        from t4wf1q.scanners import chain
+        dalfox = Finding(title="XSS candidate", severity="high", source="dalfox", host="a.test",
+                         location="https://a.test/s?q=%3Cscript%3E", confidence="medium")
+        out, n = chain.annotate_corroboration([dalfox], {("a.test", "/s", "q")})
+        self.assertEqual(n, 1)
+        self.assertEqual(out[0].confidence, "high")
+        self.assertIn("Corroborated", out[0].description or "")
+
+    def test_corroboration_leaves_unmatched_findings_untouched(self):
+        from t4wf1q.scanners import chain
+        dalfox = Finding(title="XSS candidate", severity="high", source="dalfox", host="a.test",
+                         location="https://a.test/other?z=1", confidence="medium")
+        out, n = chain.annotate_corroboration([dalfox], {("a.test", "/s", "q")})
+        self.assertEqual(n, 0)
+        self.assertEqual(out[0].confidence, "medium")
+
+
 if __name__ == "__main__":
     unittest.main()
